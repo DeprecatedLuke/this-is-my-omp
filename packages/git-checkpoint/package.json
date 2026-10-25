@@ -1,0 +1,18 @@
+{
+	"name": "omp-git-checkpoint",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "omp plugin: local WIP checkpoint commits across the workspace's git repos",
+	"dependencies": {
+		"@this-is-my-omp/render": "workspace:*"
+	},
+	"omp": {
+		"name": "git-checkpoint",
+		"version": "0.1.0",
+		"description": "Two-stage local WIP checkpoints: git_checkpoint tool (xd://git_checkpoint) and /git-checkpoint",
+		"extensions": [
+			"./src/index.ts"
+		]
+	}
+}

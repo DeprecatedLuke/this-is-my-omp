@@ -1,0 +1,27 @@
+{
+	"extends": "./.omp-host/tsconfig.base.json",
+	"compilerOptions": {
+		"paths": {
+			"@oh-my-pi/pi-coding-agent": ["./.omp-host/packages/coding-agent/src/index.ts"],
+			"@oh-my-pi/pi-coding-agent/*": ["./.omp-host/packages/coding-agent/src/*"],
+			"@oh-my-pi/pi-tui": ["./.omp-host/packages/tui/src/index.ts"],
+			"@oh-my-pi/pi-tui/*": ["./.omp-host/packages/tui/src/*"],
+			"@oh-my-pi/pi-utils": ["./.omp-host/packages/utils/src/index.ts"],
+			"@oh-my-pi/pi-utils/*": ["./.omp-host/packages/utils/src/*"],
+			"@oh-my-pi/pi-ai": ["./.omp-host/packages/ai/src/index.ts"],
+			"@oh-my-pi/pi-ai/*": ["./.omp-host/packages/ai/src/*"],
+			"@oh-my-pi/pi-agent-core": ["./.omp-host/packages/agent/src/index.ts"],
+			"@oh-my-pi/pi-agent-core/*": ["./.omp-host/packages/agent/src/*"],
+			"@oh-my-pi/pi-natives": ["./.omp-host/packages/natives/src/index.ts"],
+			"@oh-my-pi/pi-natives/*": ["./.omp-host/packages/natives/src/*"],
+			"@oh-my-pi/pi-catalog": ["./.omp-host/packages/catalog/src/index.ts"],
+			"@oh-my-pi/pi-catalog/*": ["./.omp-host/packages/catalog/src/*"],
+			"@oh-my-pi/omptype": ["./.omp-host/packages/omptype/src/index.ts"],
+			"@oh-my-pi/omptype/*": ["./.omp-host/packages/omptype/src/*"],
+			"@this-is-my-omp/render": ["./packages/render/src/index.ts"]
+		},
+		"typeRoots": ["./.omp-host/types", "./.omp-host/node_modules/@types"]
+	},
+	"include": ["packages/*/src", "packages/*/test"],
+	"exclude": ["**/node_modules"]
+}

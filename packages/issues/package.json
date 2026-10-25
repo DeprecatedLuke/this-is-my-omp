@@ -1,0 +1,35 @@
+{
+	"name": "omp-issues",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "omp plugin: project-local issue tracker under .omp/issues (issues tool, issues:// URLs, reviewer filing)",
+	"dependencies": {
+		"@this-is-my-omp/render": "workspace:*"
+	},
+	"omp": {
+		"name": "omp-issues",
+		"version": "0.1.0",
+		"description": "Project-local issue tracker: issues tool, issues:// URLs, in-progress reminders, issue-filing reviewer",
+		"extensions": [
+			"./src/index.ts"
+		],
+		"settings": {
+			"enabled": {
+				"type": "boolean",
+				"description": "Enable the project-local issues tool",
+				"default": true
+			},
+			"reminders": {
+				"type": "boolean",
+				"description": "Remind the agent before it ends a turn while issues are still marked in-progress (only when no background jobs are running)",
+				"default": true
+			},
+			"remindersMax": {
+				"type": "number",
+				"description": "Maximum number of in-progress issue reminders per prompt before giving up",
+				"default": 3
+			}
+		}
+	}
+}

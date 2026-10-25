@@ -1,0 +1,1 @@
+`knowledge://`: project knowledge notes under `.omp/knowledge`; `knowledge://` lists, `knowledge://<category>` lists one category, `knowledge://<category>/<topic>.md` reads or writes a note (writable, edit-capable).

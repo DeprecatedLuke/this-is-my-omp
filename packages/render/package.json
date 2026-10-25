@@ -1,0 +1,9 @@
+{
+	"name": "@this-is-my-omp/render",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"exports": {
+		".": "./src/index.ts"
+	}
+}

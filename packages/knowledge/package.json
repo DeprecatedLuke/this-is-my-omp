@@ -1,0 +1,38 @@
+{
+	"name": "omp-knowledge",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "omp plugin: project knowledge base under .omp/knowledge — knowledge:// notes, /knowledge commands, and an end-of-turn reminder to catalogue what the session learned",
+	"scripts": {
+		"check": "tsc --noEmit",
+		"lint": "biome check .",
+		"fmt": "biome check --write ."
+	},
+	"dependencies": {
+		"@this-is-my-omp/render": "workspace:*"
+	},
+	"omp": {
+		"name": "omp-knowledge",
+		"version": "0.1.0",
+		"description": "Project knowledge base: knowledge:// notes, a prompt-time note index, /knowledge save|build|update|compact, and an end-of-turn reminder to catalogue durable findings",
+		"extensions": [
+			"./src/index.ts"
+		],
+		"settings": {
+			"reminderThresholdTokens": {
+				"type": "number",
+				"description": "Non-cached provider tokens a top-level session may accumulate before the agent is reminded to catalogue what it learned; 0 disables the reminder",
+				"default": 100000,
+				"min": 0,
+				"step": 1000
+			}
+		}
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.6.2",
+		"@types/bun": "^1.4.4",
+		"@types/node": "^26.6.5",
+		"typescript": "6.0.3"
+	}
+}
