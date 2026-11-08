@@ -19,9 +19,9 @@ issues underneath it.
 ▌#12   ✓ Done · fixed       critical Keep session tokens out of request logs                auth now
 ```
 
-**Finished** (archived and not yet looked at) is on top, then **Active** (every
-issue that is not archived), then **Done** (archived and seen); each group lists
-the most recently updated issue first.
+**Finished** (archived and not yet looked at) is on top, then **Active** (the rest
+of the unarchived issues), then **Awaiting deploy**, then **Done** (archived and
+seen); each group lists the most recently updated issue first.
 
 ## Install
 
@@ -55,7 +55,8 @@ Three groups, top to bottom, each ordered by `updated`, newest first:
 | Group | What is in it |
 |---|---|
 | Finished | archived, and updated after the user last looked at it |
-| Active | every issue that is not archived, whatever its stage |
+| Active | every issue that is not archived, except those awaiting deploy |
+| Awaiting deploy | not archived, `stage: awaiting-deploy` |
 | Done | archived, and already seen |
 
 An archived issue counts as unseen when its `updated` is later than both the

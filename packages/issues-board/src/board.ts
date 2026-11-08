@@ -1,9 +1,10 @@
 /**
  * The board: a list of one checkout's `.omp/issues`, ordered by `updated`.
  *
- * Issues come in three groups — Finished (archived and not yet looked at),
- * Active (everything not archived) and Done (archived and seen), each newest
- * `updated` first — one row per issue. Keys — list: `j`/`k` and arrows move,
+ * Issues come in four groups — Finished (archived and not yet looked at),
+ * Active (everything else not archived), Awaiting deploy (`stage: awaiting-deploy`)
+ * and Done (archived and seen), each newest `updated` first — one row per
+ * issue. Keys — list: `j`/`k` and arrows move,
  * page keys and `g`/`G` jump, `enter` opens the detail view, `r` queues a reply
  * for the next agent prompt, `e` edits the issue file in nvim, `/` filters, `a`
  * toggles the Done window, `1`-`7` set the state, `q`/`ctrl+c` quits. Detail:

@@ -42,17 +42,18 @@ export const DONE_STATUSES: readonly DoneStatus[] = ["fixed", "wontfix", "duplic
 export const DONE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** List groups, top to bottom. */
-export type ListGroupId = "active" | "finished" | "done";
+export type ListGroupId = "active" | "finished" | "deploy" | "done";
 
 export interface ListGroup {
 	id: ListGroupId;
 	title: string;
 }
 
-/** Groups in display order: unreviewed results first, then live work, then history. */
+/** Groups in display order: unreviewed results first, then live work, shipped-but-undeployed work, then history. */
 export const LIST_GROUPS: readonly ListGroup[] = [
 	{ id: "finished", title: "Finished" },
 	{ id: "active", title: "Active" },
+	{ id: "deploy", title: "Awaiting deploy" },
 	{ id: "done", title: "Done" },
 ];
 
@@ -85,7 +86,7 @@ export function stateTitle(state: BoardStateId): string {
 
 /** Chip text: the state, and for an archived issue its group plus the resolution. */
 export function stateLabel(record: IssueRecord, group: ListGroupId): string {
-	if (group === "active") return stateTitle(stateOf(record));
+	if (group === "active" || group === "deploy") return stateTitle(stateOf(record));
 	const status = record.frontmatter.status;
 	const closed = status === "fixed" || status === "wontfix" || status === "duplicate";
 	const base = group === "finished" ? "Finished" : "Done";
@@ -132,13 +133,15 @@ export function stateGlyph(record: IssueRecord, group: ListGroupId): string {
 	}
 }
 
-/** Group header colour: Active and Finished pull the eye, Done recedes. */
+/** Group header colour: Active and Finished pull the eye, Awaiting deploy matches its chip, Done recedes. */
 export function groupTone(group: ListGroupId): ThemeColor {
 	switch (group) {
 		case "active":
 			return "accent";
 		case "finished":
 			return "warning";
+		case "deploy":
+			return "syntaxFunction";
 		default:
 			return "success";
 	}
@@ -261,7 +264,8 @@ export interface BuildListOptions {
 
 /**
  * Group records into Finished (archived and not yet seen), Active (every
- * non-archived issue) and Done (archived and seen), each newest `updated`
+ * non-archived issue not awaiting deploy), Awaiting deploy (`stage:
+ * awaiting-deploy`) and Done (archived and seen), each newest `updated`
  * first. Empty groups are dropped, so the list never shows a header with
  * nothing under it.
  */
@@ -272,7 +276,7 @@ export function buildList(records: readonly IssueRecord[], options: BuildListOpt
 	const rows = new Map<ListGroupId, IssueRecord[]>(LIST_GROUPS.map(group => [group.id, []]));
 	for (const record of records) {
 		if (!matchesFilter(record, filter)) continue;
-		if (!record.archived) rows.get("active")?.push(record);
+		if (!record.archived) rows.get(stateOf(record) === "awaiting-deploy" ? "deploy" : "active")?.push(record);
 		else if (isUnseen(record, seen)) rows.get("finished")?.push(record);
 		else if (options.showAllDone === true || now - updatedMs(record) <= DONE_WINDOW_MS)
 			rows.get("done")?.push(record);
