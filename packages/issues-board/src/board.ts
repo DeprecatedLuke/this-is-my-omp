@@ -384,18 +384,28 @@ export class BoardComponent implements Component {
 		this.#ui.requestRender();
 	}
 
-	/** Opening a Finished issue is the user seeing it: it moves to Done. */
+	/**
+	 * Opening a Finished issue is the user seeing it: it moves to Done. The cursor
+	 * does not follow it down there — a seen issue is dealt with — but stays in
+	 * place on the row that takes its slot, usually the next Finished issue.
+	 */
 	async #markSeen(entry: ListEntry): Promise<void> {
 		if (entry.group !== "finished" || !isUnseen(entry.record, this.#seen)) return;
 		const stamp = entry.record.frontmatter.updated;
 		if (stamp === undefined) return;
+		const index = this.#order.findIndex(candidate => candidate.record.id === entry.record.id);
+		const successor = this.#order[index + 1] ?? this.#order[index - 1];
+		// Move the selection before the write, so the watcher's reload of the
+		// seen file cannot anchor on the issue that is about to sink.
+		if (successor) this.#selectedId = successor.record.id;
 		try {
 			await markSeen(this.#root, entry.record.id, stamp);
 		} catch (error) {
+			this.#selectedId = entry.record.id;
 			this.#setStatus("error", `#${entry.record.id}: ${error instanceof Error ? error.message : String(error)}`);
 			return;
 		}
-		await this.#reload(entry.record.id);
+		await this.#reload(this.#selectedId);
 	}
 
 	async #edit(): Promise<void> {
