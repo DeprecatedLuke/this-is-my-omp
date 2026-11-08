@@ -813,7 +813,7 @@ export class BoardComponent implements Component {
 		if (view === "list") {
 			// What each state key sets, in the colour its chip will take.
 			const keys = BOARD_STATES.map(
-				(state, index) => `${formatKeyHint(String(index + 1))} ${theme.fg(stateIdTone(state.id), state.title)}`,
+				(state, index) => `${index + 1} ${theme.fg(stateIdTone(state.id), state.title)}`,
 			).join(theme.fg("dim", " · "));
 			lines.push(truncateToWidth(` ${keys}`, width, Ellipsis.Omit));
 		}
