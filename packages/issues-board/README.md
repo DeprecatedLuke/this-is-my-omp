@@ -19,9 +19,9 @@ issues underneath it.
 ▌#12   ✓ Done · fixed       critical Keep session tokens out of request logs                auth now
 ```
 
-Each group is newest first: **Finished** (archived and not yet looked at) on
-top, then **Active** (every issue that is not archived), then **Done**
-(archived and seen).
+**Finished** (archived and not yet looked at, newest first) is on top, then
+**Active** (every issue that is not archived, oldest first, so work that has
+waited longest leads), then **Done** (archived and seen, newest first).
 
 ## Install
 
@@ -50,13 +50,13 @@ with `no .omp/issues found at or above <start>` when there is none.
 
 ## Groups
 
-Three groups, top to bottom, each newest `updated` first:
+Three groups, top to bottom, ordered by `updated`:
 
-| Group | What is in it |
-|---|---|
-| Finished | archived, and updated after the user last looked at it |
-| Active | every issue that is not archived, whatever its stage |
-| Done | archived, and already seen |
+| Group | What is in it | Order |
+|---|---|---|
+| Finished | archived, and updated after the user last looked at it | newest first |
+| Active | every issue that is not archived, whatever its stage | oldest first |
+| Done | archived, and already seen | newest first |
 
 An archived issue counts as unseen when its `updated` is later than both the
 inbox watermark (when this machine's inbox was created) and the stamp the user

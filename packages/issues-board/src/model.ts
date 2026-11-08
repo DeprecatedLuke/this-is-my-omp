@@ -190,10 +190,15 @@ export function updatedMs(record: IssueRecord): number {
 	return Number.isFinite(parsed) ? parsed : 0;
 }
 
-/** Row order inside a group: most recently updated first, then id. */
-export function compareRows(a: IssueRecord, b: IssueRecord): number {
+/** Most recently updated first, then id: the order of Finished and Done. */
+export function compareNewest(a: IssueRecord, b: IssueRecord): number {
 	const byUpdated = updatedMs(b) - updatedMs(a);
 	return byUpdated !== 0 ? byUpdated : b.id - a.id;
+}
+
+/** Least recently updated first, then id: open work that has waited longest leads. */
+export function compareOldest(a: IssueRecord, b: IssueRecord): number {
+	return -compareNewest(a, b);
 }
 
 /** Case-insensitive substring match over title, category and body. */
@@ -260,9 +265,10 @@ export interface BuildListOptions {
 }
 
 /**
- * Group records into Active (every non-archived issue), Finished (archived and
- * not yet seen) and Done (archived and seen), each newest first. Empty groups
- * are dropped, so the list never shows a header with nothing under it.
+ * Group records into Finished (archived and not yet seen, newest first), Active
+ * (every non-archived issue, oldest first) and Done (archived and seen, newest
+ * first). Empty groups are dropped, so the list never shows a header with
+ * nothing under it.
  */
 export function buildList(records: readonly IssueRecord[], options: BuildListOptions = {}): ListGroupView[] {
 	const filter = options.filter ?? "";
@@ -276,9 +282,10 @@ export function buildList(records: readonly IssueRecord[], options: BuildListOpt
 		else if (options.showAllDone === true || now - updatedMs(record) <= DONE_WINDOW_MS)
 			rows.get("done")?.push(record);
 	}
-	return LIST_GROUPS.map(group => ({ group, records: (rows.get(group.id) ?? []).sort(compareRows) })).filter(
-		view => view.records.length > 0,
-	);
+	return LIST_GROUPS.map(group => ({
+		group,
+		records: (rows.get(group.id) ?? []).sort(group.id === "active" ? compareOldest : compareNewest),
+	})).filter(view => view.records.length > 0);
 }
 
 /**

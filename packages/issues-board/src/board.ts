@@ -1,11 +1,12 @@
 /**
- * The board: a recency-sorted list of one checkout's `.omp/issues`.
+ * The board: a list of one checkout's `.omp/issues`, ordered by `updated`.
  *
- * Issues come in three groups — Active (everything not archived), Finished
- * (archived and not yet looked at) and Done (archived and seen) — each newest
- * first, one row per issue. Keys — list: `j`/`k` and arrows move, page keys and
- * `g`/`G` jump, `enter` opens the detail view, `r` queues a reply for the next
- * agent prompt, `e` edits the issue file in nvim, `/` filters, `a` toggles the
+ * Issues come in three groups — Finished (archived and not yet looked at,
+ * newest first), Active (everything not archived, oldest first) and Done
+ * (archived and seen, newest first) — one row per issue. Keys — list: `j`/`k`
+ * and arrows move, page keys and `g`/`G` jump, `enter` opens the detail view,
+ * `r` queues a reply for the next agent prompt, `e` edits the issue file in
+ * nvim, `/` filters, `a` toggles the
  * Done window, `1`-`7` set the state, `q`/`ctrl+c` quits. Detail: arrows/`jk`/
  * page keys scroll, `esc` back, `r` reply, `e` edit.
  */

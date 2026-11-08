@@ -5,7 +5,7 @@ Personal [oh-my-pi](https://github.com/can1357/oh-my-pi) (`omp`) plugins, kept o
 | Package | Plugin | What it adds |
 |---|---|---|
 | `packages/issues` | `omp-issues` | Project-local issue tracker: `issues` tool, `issues://` URLs, in-progress reminders, issue-filing reviewer agent |
-| `packages/issues-board` | — | Terminal issue list for the tracker (`omp-board`), sorted by recency |
+| `packages/issues-board` | — | Terminal issue list for the tracker (`omp-board`) |
 | `packages/knowledge` | `omp-knowledge` | Project knowledge base: `knowledge://` notes, `# Knowledge` prompt index, `/knowledge save\|build\|update\|compact`, a passive knowledge hint |
 | `packages/git-checkpoint` | `omp-git-checkpoint` | Two-stage local WIP checkpoints: `git_checkpoint` tool and `/git-checkpoint` |
 | `packages/agents` | `omp-agents` | `solver`, `research`, and `tester` subagents |

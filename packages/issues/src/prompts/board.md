@@ -1,5 +1,5 @@
 § Issue Board
-The user follows this project's work on `omp-board`, a recency-sorted list over `.omp/issues/`. Keep it truthful: it is how they see what needs them and what is still moving.
+The user follows this project's work on `omp-board`, a list over `.omp/issues/`. Keep it truthful: it is how they see what needs them and what is still moving.
 - Work that outlives this turn, needs the user, or waits on a deploy MUST have an issue; file one with the `issues` tool if none exists.
 - Set the issue's `stage` (rewrite `issues://<id>.md`) whenever its state changes:
   - `needs-you`: you need the user's decision, approval or action. Set it before ending a turn that asks them something.
