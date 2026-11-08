@@ -7,7 +7,7 @@ issues underneath it.
 
 ```
  ▌ omp-board · myrepo ~/src/myrepo                                                         3 issues
- Finished 1 · Active 1 · Done 1
+ Finished 1 · Active 1 · Awaiting deploy 0 · Done 1
 ────────────────────────────────────────────────────────────────────────────────────────────────────
  ▌ Finished 1 ──────────────────────────────────────────────────────────────────────────────────────
  #130  ◆ Finished · wontfix medium   Drop the legacy CSV export endpoint                     api now
@@ -50,7 +50,7 @@ with `no .omp/issues found at or above <start>` when there is none.
 
 ## Groups
 
-Three groups, top to bottom, each ordered by `updated`, newest first:
+Four groups, top to bottom, each ordered by `updated`, newest first:
 
 | Group | What is in it |
 |---|---|
