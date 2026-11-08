@@ -8,8 +8,12 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { InternalUrlRouter, parseInternalUrl } from "@oh-my-pi/pi-coding-agent/internal-urls";
+import { listReplies } from "../src/inbox";
 import { IssuesProtocolHandler } from "../src/protocol";
-import { addIssue, archiveIssue, findIssueById } from "../src/store";
+import { addIssue, archiveIssue, findIssueById, replyToIssue } from "../src/store";
+import { useTempAgentDir } from "./agent-dir";
+
+useTempAgentDir();
 
 /** Extracts the text blocks of a handler write result (InternalWriteResult.content). */
 function writeResultText(result: void | { content: Array<{ type: string; text?: string }> }): string {
@@ -250,5 +254,68 @@ describe("IssuesProtocolHandler", () => {
 		await expect(
 			handler.write(parseInternalUrl(`issues://${record.id}.md`), badSeverity, { cwd: tempDir }),
 		).rejects.toThrow(/invalid severity/i);
+	});
+
+	it("rejects a write with an out-of-enum stage, leaving the file intact, and accepts a valid one", async () => {
+		const { record } = await addIssue(tempDir, { category: "security", title: "Stage guard", body: "Body." });
+		const handler = InternalUrlRouter.instance().getHandler("issues");
+		if (!handler?.write) throw new Error("issues handler must define write");
+		const url = parseInternalUrl(`issues://${record.id}.md`);
+		const withStage = (stage: string) =>
+			["---", "title: Stage guard", `stage: ${stage}`, "---", "", "Body."].join("\n");
+		const before = await Bun.file(record.filePath).text();
+
+		for (const stage of ["blocked", "Running", "3"]) {
+			await expect(handler.write(url, withStage(stage), { cwd: tempDir })).rejects.toThrow(/invalid stage/i);
+		}
+		expect(await Bun.file(record.filePath).text()).toBe(before);
+
+		await handler.write(url, withStage("awaiting-deploy"), { cwd: tempDir });
+		expect((await findIssueById(tempDir, record.id))?.frontmatter.stage).toBe("awaiting-deploy");
+	});
+
+	it("rejects a malformed report, leaving the file intact, and accepts report:// and https:// links", async () => {
+		const { record } = await addIssue(tempDir, { category: "security", title: "Report guard", body: "Body." });
+		const handler = InternalUrlRouter.instance().getHandler("issues");
+		if (!handler?.write) throw new Error("issues handler must define write");
+		const url = parseInternalUrl(`issues://${record.id}.md`);
+		const withReport = (report: string) =>
+			["---", "title: Report guard", `report: ${JSON.stringify(report)}`, "---", "", "Body."].join("\n");
+		const before = await Bun.file(record.filePath).text();
+
+		for (const report of ["report://personal", "reports://personal/x", "ftp://host/x", "personal/x"]) {
+			await expect(handler.write(url, withReport(report), { cwd: tempDir })).rejects.toThrow(/invalid report/i);
+		}
+		expect(await Bun.file(record.filePath).text()).toBe(before);
+
+		for (const report of ["report://personal/report-guard", "https://reports.example.com/personal/report-guard"]) {
+			await handler.write(url, withReport(report), { cwd: tempDir });
+			expect((await findIssueById(tempDir, record.id))?.frontmatter.report).toBe(report);
+		}
+	});
+
+	it("an agent writing back a board-replied issue keeps up-next and a multi-line value, and never sees the reply text", async () => {
+		const notes = `First line: "quoted"\n\n- second paragraph`;
+		const { record } = await addIssue(tempDir, {
+			category: "security",
+			title: "Reply guard",
+			body: "Body.",
+			extra: { notes },
+		});
+		await replyToIssue(tempDir, record.id, "Secret-ish reply text.");
+		const handler = InternalUrlRouter.instance().getHandler("issues");
+		if (!handler?.write) throw new Error("issues handler must define write");
+
+		// The agent writes the file back as read, with a note appended to the body.
+		const onDisk = await Bun.file(record.filePath).text();
+		expect(onDisk).not.toContain("Secret-ish reply text.");
+		await handler.write(parseInternalUrl(`issues://${record.id}.md`), `${onDisk}\nAgent note.\n`, { cwd: tempDir });
+
+		const after = await findIssueById(tempDir, record.id);
+		expect(after?.frontmatter.stage).toBe("up-next");
+		expect(after?.frontmatter.notes).toBe(notes);
+		expect(after?.body).toBe("Body.\n\nAgent note.");
+		// The write-back does not consume the pending reply.
+		expect((await listReplies(tempDir)).map(reply => reply.text)).toEqual(["Secret-ish reply text."]);
 	});
 });

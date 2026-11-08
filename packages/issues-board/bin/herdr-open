@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# herdr plugin action helper for the omp issues board.
+#
+#   herdr-open split   open the board in a split pane (keybinding / action)
+#   herdr-open link    open the board as a popup focused on the clicked issue
+#
+# herdr runs actions with the plugin directory as the working directory and sets
+# HERDR_BIN_PATH and, for link clicks, HERDR_PLUGIN_CLICKED_URL.
+set -euo pipefail
+
+mode=${1:-split}
+herdr=${HERDR_BIN_PATH:-herdr}
+
+open_pane() {
+	exec "$herdr" plugin pane open --plugin omp.issues-board --entrypoint board "$@"
+}
+
+case $mode in
+split)
+	open_pane --placement split
+	;;
+link)
+	url=${HERDR_PLUGIN_CLICKED_URL:-}
+	id=${url#issues://}
+	id=${id%%[!0-9]*}
+	if [ -z "$id" ]; then
+		printf 'omp-board: no issue id in clicked URL %s\n' "$url" >&2
+		exit 1
+	fi
+	open_pane --placement popup --width 90% --height 80% --env "OMP_BOARD_FOCUS_ISSUE=$id"
+	;;
+*)
+	printf 'omp-board: unknown mode %s\n' "$mode" >&2
+	exit 2
+	;;
+esac

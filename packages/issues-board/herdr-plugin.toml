@@ -1,0 +1,37 @@
+id = "omp.issues-board"
+name = "omp issues board"
+version = "0.1.0"
+min_herdr_version = "0.7.4"
+description = "Terminal issue list for omp's .omp/issues tracker"
+platforms = ["linux", "macos"]
+
+# The board takes its repository from HERDR_PLUGIN_CONTEXT_JSON (the cwd of the pane
+# it was opened from), because herdr runs pane commands with the plugin directory as
+# their working directory.
+[[panes]]
+id = "board"
+title = "Issues board"
+placement = "split"
+command = ["bin/omp-board"]
+
+[[actions]]
+id = "open-board"
+title = "Open issues board"
+description = "Open the omp issues board in a split pane"
+contexts = ["workspace"]
+command = ["bin/herdr-open", "split"]
+
+[[actions]]
+id = "open-issue"
+title = "Open issue in board"
+description = "Open the omp issues board in a popup focused on a clicked issues:// link"
+command = ["bin/herdr-open", "link"]
+
+# herdr routes OSC 8 hyperlinks of any scheme to matching link handlers on ctrl+click;
+# omp renders `issues://<id>` as an OSC 8 link, so ctrl+clicking one opens the board on
+# that issue. Plain-text URLs are only detected for http/https.
+[[link_handlers]]
+id = "issue-link"
+title = "Open issue in board"
+pattern = "^issues://[0-9]+"
+action = "open-issue"

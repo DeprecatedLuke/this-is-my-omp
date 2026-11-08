@@ -1,9 +1,11 @@
 /**
- * `§ Filed Issues` catalogue block injected into the prompt of any subagent granted the
- * `issues` tool, so it de-duplicates against what is already catalogued instead
- * of re-filing settled decisions or open findings.
+ * Issue prompt sections. `§ Filed Issues` is injected into the prompt of any subagent
+ * granted the `issues` tool, so it de-duplicates against what is already catalogued
+ * instead of re-filing settled decisions or open findings. `§ Issue Board` goes to
+ * the main agent, so it keeps `stage` current for `omp-board`.
  */
 import { prompt } from "@oh-my-pi/pi-utils";
+import boardTemplate from "./prompts/board.md" with { type: "text" };
 import filedIssuesTemplate from "./prompts/filed-issues.md" with { type: "text" };
 import { listIssues, renderIssueListing } from "./store";
 
@@ -23,3 +25,6 @@ export async function filedIssuesCatalogue(cwd: string): Promise<string> {
 export async function filedIssuesSection(cwd: string): Promise<string> {
 	return prompt.render(filedIssuesTemplate, { listing: await filedIssuesCatalogue(cwd) });
 }
+
+/** `§ Issue Board`: the main agent's `stage` workflow for `omp-board`. Static, so the prompt prefix stays cacheable. */
+export const boardSection: string = prompt.render(boardTemplate, {});

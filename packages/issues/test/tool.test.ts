@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { findIssueById, getIssuesRoot } from "../src/store";
+import { findIssueById, getIssuesRoot, listIssues } from "../src/store";
 import { type IssuesToolDetails, runIssuesOp } from "../src/tool";
 
 let tempDir: string;
@@ -138,5 +138,29 @@ describe("issues tool", () => {
 		expect(result.isError).toBe(true);
 		expect((result.details as IssuesToolDetails).error).toMatch(/Invalid issue category/);
 		expect(await Bun.file(path.join(tempDir, ".omp", "issues", ".next-id")).exists()).toBe(false);
+	});
+
+	it("add writes a valid report link into the frontmatter and rejects a malformed one without a file", async () => {
+		const created = await runIssuesOp(tempDir, {
+			op: "add",
+			category: "infra",
+			title: "Flaky deploy",
+			body: "Body.",
+			report: "report://personal/flaky-deploy",
+		});
+		expect(created.isError).toBeFalsy();
+		const { id } = created.details as IssuesToolDetails;
+		expect((await findIssueById(tempDir, id!))?.frontmatter.report).toBe("report://personal/flaky-deploy");
+
+		const rejected = await runIssuesOp(tempDir, {
+			op: "add",
+			category: "infra",
+			title: "Dead link",
+			body: "Body.",
+			report: "reports.example.com/personal/flaky-deploy",
+		});
+		expect(rejected.isError).toBe(true);
+		expect((rejected.details as IssuesToolDetails).error).toMatch(/invalid report/);
+		expect((await listIssues(tempDir)).map(summary => summary.title)).toEqual(["Flaky deploy"]);
 	});
 });

@@ -6,7 +6,8 @@ survives uninstalling the plugin and diffing trivially in review.
 
 This plugin was extracted from omp core: the `issues` tool, the `issues://` URL
 scheme, the end-of-turn in-progress reminder, the `§ Filed Issues` subagent
-section, and the issue-filing `reviewer` agent all live here now.
+section, the `§ Issue Board` main-agent section, and the issue-filing `reviewer`
+agent all live here now.
 
 ## Install
 
@@ -37,7 +38,7 @@ Registered as a discoverable extension tool, so the host mounts it as the
 
 | Op | Required | Optional | Effect |
 | --- | --- | --- | --- |
-| `add` | `category`, `title`, `body` | `severity`, `status`, `location[]`, `extra` | Allocates the next global id, writes `.omp/issues/<category>/<id>-<slug>.md`. |
+| `add` | `category`, `title`, `body` | `severity`, `status`, `report`, `location[]`, `extra` | Allocates the next global id, writes `.omp/issues/<category>/<id>-<slug>.md`. |
 | `archive` | `id` | `reason`, `status` (default `fixed`) | Moves the file to `.omp/issues/.archive/<category>/`. |
 | `unarchive` | `id` | `status` (default `open`) | Restores the file to its category. |
 | `list` | — | `category`, `archived`, `severity`, `status`, `query`, `limit` | Markdown listing; `details.listing` feeds the TUI. |
@@ -48,6 +49,89 @@ URL with the `write` tool: a `title` change re-derives the slug, a `category`
 change moves the file, and a terminal `status` (`fixed`/`wontfix`/`duplicate`)
 archives it. The rewrite is validated, so a malformed edit is rejected instead
 of corrupting the metadata layer.
+
+### `stage`
+
+An optional `stage` key gives an active issue its state on the `omp-board`
+list. Set it by rewriting the issue through
+`issues://<id>.md` (or via `add`'s `extra`); a value outside the set is rejected
+like an out-of-enum `status`/`severity`.
+
+| Stage | Meaning |
+| --- | --- |
+| `needs-you` | Blocked on a human decision or action. |
+| `up-next` | The user wants it started next. |
+| `running` | Work in flight across sessions; prefer it over `in-progress` for long-running work. |
+| `awaiting-deploy` | Fixed in code, not deployed. |
+| `deferred` | Parked on purpose. |
+
+Omit it for plain open work. Moving an issue to Done clears the key, and an
+archived issue never shows a stage.
+
+### `report`
+
+An optional `report` key attaches the write-up an issue came from: either a
+`report://<project>/<slug>` handle or an absolute `http(s)://` URL. Set it with
+`add`'s `report` param or by rewriting `issues://<id>.md`; anything else (`ftp://x`,
+`report://nope`) is rejected like an out-of-enum `status`/`severity`. Every other
+lifecycle path — board moves, archive, unarchive, metadata edits — preserves it.
+
+While `enabled`, the main agent gets a static `§ Issue Board` system-prompt
+section (`src/prompts/board.md`): file an issue for work that outlives the turn,
+needs the user or waits on a deploy, keep its `stage` current, use `running`
+rather than `in-progress` for unfinished work, and cite issues as
+`issues://<id>`. The in-progress reminder points the same way: an issue not
+finished this turn goes back to `open` with `stage: running` or `needs-you`.
+
+### Replies
+
+A reply typed on the board is parked in the **local inbox**, never in the
+git-tracked issue:
+
+```
+~/.omp/agent/issues-inbox/<checkout-slug>-<sha256(root)[:12]>/
+  replies/<id>/<epochMs>-<rand>.txt   one pending reply per file
+  queued/<id>                         empty: the user queued this issue here
+  claims/<id>                         the omp session id that owns the work
+  seen/<id>, seen/.watermark          what the user already looked at
+```
+
+Pending replies, queue marks and claims are per machine and per checkout, and are
+never committed — so a commit cannot ship a session id or a half-delivered reply,
+and a cloned repo's text cannot drive an agent. The git side only records that the
+user wants the issue worked: the issue moves to Up next — or keeps its stage when
+it is already `running`, and an archived issue reopens as `open` + `up-next`.
+
+Nothing wakes an idle session, so delivery happens at the next prompt of the first
+main session in that checkout. The issue is claimed first (`claim` is an exclusive
+`link`, so exactly one session wins), then each of its replies is taken with an
+atomic `rename` — a reply another session already took yields nothing. The plugin
+adds an `<system-reminder>` custom message (`src/prompts/replies.md`, custom type
+`omp-issues/replies`) listing the taken texts with their `issues://<id>` and title,
+then appends each one to the issue body under `## Replies` as
+`### User reply · <time>`. That history is the only trace a reply leaves in git.
+
+### The turn-end queue
+
+At the end of a main-agent turn, issues with pending replies plus active issues
+the user **queued on this machine** are the queue. If anything is queued the
+plugin returns `{ continue: true, additionalContext }` with a reminder
+(`src/prompts/queue.md`) instead of letting the turn settle silently, and the agent
+works the issues and keeps their stages truthful: `running` while in flight,
+archived when done, and `needs-you` when it needs the user back — that is the
+loop-breaker.
+
+A committed `stage: up-next` alone does not queue anything: only the local queue
+mark counts, so a cloned repo's stage cannot drive the user's agents. A mark whose
+issue is gone, archived, or no longer `up-next` (the agent moved it on) is pruned
+when the queue is read.
+
+Every queued issue is claimed for the session (`claims/<id>`), so parallel sessions
+in one checkout never take the same issue; a board move frees the claim, and
+`session_shutdown` releases everything the session still holds. The loop is bounded
+by the `remindersMax` setting: the queue's `id:updated` signature is compared with
+the last reminder, and an unchanged queue stops being reminded after that many
+stalls while any progress resets the count.
 
 ## `issues://` URLs
 

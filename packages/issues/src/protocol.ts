@@ -14,7 +14,7 @@
  * the `issues://<id>.md` URL — the single metadata-and-body edit surface. Writing
  * the frontmatter drives the lifecycle: a terminal `status` archives the file, a
  * `category` change moves it, a `title` change re-derives the slug. The write is
- * validated (intact `---` fences, parseable YAML, in-enum status/severity) and
+ * validated (intact `---` fences, parseable YAML, in-enum status/severity/stage) and
  * rejected on failure. The `issues` tool keeps only id-allocating/shortcut ops
  * (`add`, `archive`, `unarchive`, `list`); raw writes to listing URLs
  * (`issues://`, `issues://archive`) are rejected.
@@ -145,7 +145,7 @@ async function writeIssueFile(cwd: string, basename: string, content: string): P
 	}
 
 	// The store validates the edited content (intact `---` fences, parseable
-	// YAML, in-enum status/severity) and applies whatever lifecycle the new
+	// YAML, in-enum status/severity/stage) and applies whatever lifecycle the new
 	// frontmatter implies — terminal status archives, category change moves,
 	// title change renames. A malformed edit throws here and is rejected before
 	// it can corrupt the metadata layer.

@@ -1,20 +1,33 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, setSystemTime, vi } from "bun:test";
+import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { parseFrontmatter } from "@oh-my-pi/pi-utils";
+import type { BunFile } from "bun";
+import { claim, listQueued, listReplies, setQueued, takeReply } from "../src/inbox";
 import {
 	addIssue,
+	appendReplyHistory,
 	archiveIssue,
 	findIssueByFilename,
 	findIssueById,
 	getIssuesRoot,
+	type IssueStage,
+	type IssueStatus,
+	listIssueRecords,
 	listIssues,
+	listQueuedIssues,
+	moveIssue,
 	normalizeCategory,
+	replyToIssue,
 	saveIssueContent,
 	slugifyTitle,
 	unarchiveIssue,
 } from "../src/store";
+import { useTempAgentDir } from "./agent-dir";
+
+useTempAgentDir();
 
 let tempDir: string;
 
@@ -408,4 +421,612 @@ describe("issues store: concurrent add safety", () => {
 		const all = await listIssues(tempDir, { archived: false });
 		expect(all.length).toBe(count);
 	});
+});
+
+// Frontmatter exactly as written to disk, parsed independently of the store's
+// in-memory record so a move that returns one thing and writes another is caught.
+async function readFrontmatterOnDisk(filePath: string): Promise<Record<string, unknown>> {
+	const text = await Bun.file(filePath).text();
+	return parseFrontmatter(text, { source: filePath, normalize: false }).frontmatter;
+}
+
+describe("issues store: listIssueRecords", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("returns active and archived records with full frontmatter and bodies", async () => {
+		const active = await addIssue(tempDir, {
+			category: "security",
+			title: "Token in logs",
+			body: "Active body.",
+			extra: { stage: "running", owner: "alice" },
+		});
+		const archived = await addIssue(tempDir, {
+			category: "correctness",
+			title: "Off by one",
+			body: "Archived body.",
+		});
+		await archiveIssue(tempDir, archived.record.id, { reason: "fixed upstream" });
+
+		const records = await listIssueRecords(tempDir);
+		expect(records.map(r => r.id).sort((a, b) => a - b)).toEqual([active.record.id, archived.record.id]);
+
+		const byId = new Map(records.map(r => [r.id, r]));
+		const a = byId.get(active.record.id)!;
+		expect(a.archived).toBe(false);
+		expect(a.category).toBe("security");
+		expect(a.body).toBe("Active body.");
+		expect(a.frontmatter.stage).toBe("running");
+		expect(a.frontmatter.owner).toBe("alice");
+
+		const b = byId.get(archived.record.id)!;
+		expect(b.archived).toBe(true);
+		expect(b.category).toBe("correctness");
+		expect(b.body).toBe("Archived body.");
+		expect(b.frontmatter.archive_reason).toBe("fixed upstream");
+	});
+
+	it("skips a file that vanishes between the scan and the read", async () => {
+		const kept = await addIssue(tempDir, { category: "security", title: "Kept", body: "B." });
+		const gone = await addIssue(tempDir, { category: "security", title: "Gone", body: "B." });
+		const victim = gone.record.filePath;
+
+		// The scan has already listed the file; delete it at the moment it is
+		// opened, exactly as a concurrent archive/unarchive would.
+		const realFile = Bun.file as (path: string, options?: BlobPropertyBag) => BunFile;
+		vi.spyOn(Bun, "file").mockImplementation(((filePath: string, options?: BlobPropertyBag) => {
+			if (filePath === victim) fsSync.rmSync(victim, { force: true });
+			return realFile(filePath, options);
+		}) as typeof Bun.file);
+
+		const records = await listIssueRecords(tempDir);
+		expect(records.map(r => r.id)).toEqual([kept.record.id]);
+	});
+});
+
+describe("issues store: moveIssue", () => {
+	afterEach(() => {
+		setSystemTime();
+	});
+
+	it("sets, changes, and clears stage in place on an active issue", async () => {
+		const { record } = await addIssue(tempDir, { category: "infra", title: "Flaky deploy", body: "B." });
+
+		const running = await moveIssue(tempDir, record.id, { stage: "running" });
+		expect(running.filePath).toBe(record.filePath);
+		expect(running.archived).toBe(false);
+		expect((await readFrontmatterOnDisk(record.filePath)).stage).toBe("running");
+
+		await moveIssue(tempDir, record.id, { stage: "needs-you" });
+		expect((await readFrontmatterOnDisk(record.filePath)).stage).toBe("needs-you");
+
+		const cleared = await moveIssue(tempDir, record.id, { stage: null });
+		const onDisk = await readFrontmatterOnDisk(record.filePath);
+		// Deleted, not written as `stage: null`.
+		expect("stage" in onDisk).toBe(false);
+		expect(onDisk.status).toBe("open");
+		expect(cleared.archived).toBe(false);
+	});
+
+	for (const status of ["fixed", "wontfix", "duplicate"] as const) {
+		it(`status ${status} archives into .archive/<category>/, drops stage, records the reason`, async () => {
+			const root = getIssuesRoot(tempDir);
+			const { record } = await addIssue(tempDir, {
+				category: "infra",
+				title: "Flaky deploy",
+				body: "B.",
+				extra: { stage: "awaiting-deploy" },
+			});
+
+			// A stage in the same move must not leak onto the archived file.
+			const moved = await moveIssue(tempDir, record.id, { stage: "running", status, reason: "closed by board" });
+
+			const archivedPath = path.join(root, ".archive", "infra", record.filename);
+			expect(moved.archived).toBe(true);
+			expect(moved.filePath).toBe(archivedPath);
+			expect(fsSync.existsSync(record.filePath)).toBe(false);
+			// The emptied active category directory is pruned.
+			expect(fsSync.existsSync(path.join(root, "infra"))).toBe(false);
+
+			const onDisk = await readFrontmatterOnDisk(archivedPath);
+			expect(onDisk.status).toBe(status);
+			expect(onDisk.archive_reason).toBe("closed by board");
+			expect("stage" in onDisk).toBe(false);
+		});
+	}
+
+	it("an active status on an archived issue unarchives it, sets the stage, and drops archive_reason", async () => {
+		const root = getIssuesRoot(tempDir);
+		const { record } = await addIssue(tempDir, { category: "infra", title: "Flaky deploy", body: "B." });
+		await moveIssue(tempDir, record.id, { stage: null, status: "fixed", reason: "looked fixed" });
+
+		const reopened = await moveIssue(tempDir, record.id, { stage: "running", status: "in-progress" });
+
+		expect(reopened.archived).toBe(false);
+		expect(reopened.filePath).toBe(record.filePath);
+		// The archive copy is retired and its emptied category + root pruned.
+		expect(fsSync.existsSync(path.join(root, ".archive"))).toBe(false);
+
+		const onDisk = await readFrontmatterOnDisk(record.filePath);
+		expect(onDisk.status).toBe("in-progress");
+		expect(onDisk.stage).toBe("running");
+		expect("archive_reason" in onDisk).toBe(false);
+	});
+
+	it("a stage-only move on an archived issue keeps it archived with no stage and its reason", async () => {
+		const { record } = await addIssue(tempDir, { category: "infra", title: "Flaky deploy", body: "B." });
+		const archived = await moveIssue(tempDir, record.id, { stage: null, status: "wontfix", reason: "by design" });
+
+		const moved = await moveIssue(tempDir, record.id, { stage: "running" });
+
+		expect(moved.archived).toBe(true);
+		expect(moved.filePath).toBe(archived.filePath);
+		const onDisk = await readFrontmatterOnDisk(archived.filePath);
+		expect("stage" in onDisk).toBe(false);
+		expect(onDisk.status).toBe("wontfix");
+		expect(onDisk.archive_reason).toBe("by design");
+	});
+
+	it("preserves every other frontmatter key and the body across moves, bumping only updated", async () => {
+		const created = new Date("2026-01-01T00:00:00.000Z");
+		const firstMove = new Date("2026-02-01T00:00:00.000Z");
+		const secondMove = new Date("2026-03-01T00:00:00.000Z");
+		const body = [
+			"## Repro",
+			"",
+			"- step: one",
+			"- step two",
+			"",
+			"```ts",
+			"const x = { a: 1 };",
+			"```",
+			"",
+			"---",
+			"",
+			"Trailing paragraph after a horizontal rule.",
+		].join("\n");
+
+		setSystemTime(created);
+		const { record } = await addIssue(tempDir, {
+			category: "infra",
+			title: "Flaky deploy",
+			body,
+			severity: "high",
+			location: ["src/deploy.ts:42"],
+			extra: {
+				owner: "alice",
+				priority: 2,
+				blocked: false,
+				links: ["pr://12", "issue://3"],
+				meta: { reviewer: "ana", round: 2 },
+			},
+		});
+		expect(record.body).toBe(body);
+
+		setSystemTime(firstMove);
+		await moveIssue(tempDir, record.id, { stage: "running" });
+		const afterStage = (await findIssueById(tempDir, record.id))!;
+		expect(afterStage.frontmatter).toEqual({
+			...record.frontmatter,
+			stage: "running",
+			updated: firstMove.toISOString(),
+		});
+		expect(afterStage.body).toBe(body);
+
+		setSystemTime(secondMove);
+		await moveIssue(tempDir, record.id, { stage: null, status: "fixed", reason: "shipped" });
+		const afterArchive = (await findIssueById(tempDir, record.id))!;
+		expect(afterArchive.archived).toBe(true);
+		expect(afterArchive.frontmatter).toEqual({
+			...record.frontmatter,
+			status: "fixed",
+			archive_reason: "shipped",
+			updated: secondMove.toISOString(),
+		});
+		expect(afterArchive.frontmatter.created).toBe(created.toISOString());
+		expect(afterArchive.body).toBe(body);
+	});
+
+	it("re-reads from disk, keeping an edit (including a rename) made after the caller's listing", async () => {
+		const { record } = await addIssue(tempDir, { category: "infra", title: "Flaky deploy", body: "Original body." });
+		const [listed] = await listIssueRecords(tempDir);
+		expect(listed.id).toBe(record.id);
+
+		// Another writer edits the issue after the board listed it: new body, new
+		// key, new severity, and a title change that renames the file.
+		await saveIssueContent(
+			tempDir,
+			record.id,
+			[
+				"---",
+				"title: Flaky deploy on arm",
+				"category: infra",
+				"severity: critical",
+				"owner: agent-7",
+				"---",
+				"",
+				"Body rewritten by another agent.",
+			].join("\n"),
+		);
+
+		const moved = await moveIssue(tempDir, listed.id, { stage: "needs-you" });
+
+		// Exactly one file for the id: the stale filename is not resurrected.
+		const all = await listIssueRecords(tempDir);
+		expect(all.filter(r => r.id === record.id)).toHaveLength(1);
+		expect(fsSync.existsSync(listed.filePath)).toBe(false);
+		expect(moved.filename).toBe(`${record.id}-flaky-deploy-on-arm.md`);
+
+		const onDisk = await readFrontmatterOnDisk(moved.filePath);
+		expect(onDisk.stage).toBe("needs-you");
+		expect(onDisk.severity).toBe("critical");
+		expect(onDisk.owner).toBe("agent-7");
+		expect(onDisk.title).toBe("Flaky deploy on arm");
+		expect(moved.body).toBe("Body rewritten by another agent.");
+	});
+
+	it("rejects an unknown id or an out-of-enum stage/status without touching disk", async () => {
+		const { record } = await addIssue(tempDir, { category: "infra", title: "Flaky deploy", body: "B." });
+		const before = await Bun.file(record.filePath).text();
+
+		await expect(moveIssue(tempDir, 999, { stage: "running" })).rejects.toThrow("Issue #999 not found.");
+		await expect(moveIssue(tempDir, record.id, { stage: "blocked" as IssueStage })).rejects.toThrow(/invalid stage/);
+		await expect(moveIssue(tempDir, record.id, { stage: null, status: "closed" as IssueStatus })).rejects.toThrow(
+			/invalid status/,
+		);
+
+		expect(await Bun.file(record.filePath).text()).toBe(before);
+		expect((await listIssueRecords(tempDir)).map(r => r.id)).toEqual([record.id]);
+	});
+});
+
+describe("issues store: stage validation on add", () => {
+	it("rejects an out-of-enum stage in extra before creating a file, and accepts a valid one", async () => {
+		for (const stage of ["blocked", "Running", 3]) {
+			await expect(
+				addIssue(tempDir, { category: "infra", title: "Bad stage", body: "B.", extra: { stage } }),
+			).rejects.toThrow(/invalid stage/);
+		}
+		expect(await listIssueRecords(tempDir)).toEqual([]);
+
+		const { record } = await addIssue(tempDir, {
+			category: "infra",
+			title: "Good stage",
+			body: "B.",
+			extra: { stage: "deferred" },
+		});
+		expect((await readFrontmatterOnDisk(record.filePath)).stage).toBe("deferred");
+	});
+});
+
+// A multi-line value exercising everything a YAML scalar can mangle: blank
+// lines, both quote styles, `key: value` and `# comment` lookalikes, a list
+// marker, a frontmatter fence, a backslash, a tab, and non-ASCII.
+const TRICKY_TEXT = [
+	`Line one: "double" and 'single' quotes`,
+	"",
+	"- not a list item",
+	"---",
+	"  indented: # not a comment",
+	"key: value",
+	"back\\slash, tab\there, ünïcode — dash",
+].join("\n");
+
+const ids = (records: { id: number }[]) => records.map(r => r.id);
+
+/** Pending reply texts for one issue, oldest first. */
+async function pendingTexts(cwd: string, id: number): Promise<string[]> {
+	return (await listReplies(cwd)).filter(reply => reply.id === id).map(reply => reply.text);
+}
+
+describe("issues store: replyToIssue", () => {
+	afterEach(() => {
+		setSystemTime();
+	});
+
+	it("rejects an empty reply or an unknown id without writing anything", async () => {
+		const { record } = await addIssue(tempDir, { category: "infra", title: "Flaky deploy", body: "B." });
+		const before = await Bun.file(record.filePath).text();
+
+		for (const text of ["", "   \n\t  "]) {
+			await expect(replyToIssue(tempDir, record.id, text)).rejects.toThrow("Reply is empty.");
+		}
+		await expect(replyToIssue(tempDir, 999, "Hello")).rejects.toThrow("Issue #999 not found.");
+
+		expect(await Bun.file(record.filePath).text()).toBe(before);
+		expect(await listReplies(tempDir)).toEqual([]);
+		expect([...(await listQueued(tempDir))]).toEqual([]);
+	});
+
+	it("parks the reply in the local inbox; the git file only gains stage up-next and a new updated", async () => {
+		const body = ["## Repro", "", "- step: one", "", "```ts", "const x = { a: 1 };", "```"].join("\n");
+		setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+		const { record } = await addIssue(tempDir, {
+			category: "infra",
+			title: "Flaky deploy",
+			body,
+			severity: "high",
+			location: ["src/deploy.ts:42"],
+			extra: { stage: "needs-you", owner: "alice", priority: 2, links: ["pr://12"] },
+		});
+		const frontmatterBefore = await readFrontmatterOnDisk(record.filePath);
+		// Everything under `.omp/issues` is what a commit would pick up.
+		const trackedBefore = (await fs.readdir(getIssuesRoot(tempDir), { recursive: true })).sort();
+
+		setSystemTime(new Date("2026-02-01T00:00:00.000Z"));
+		await replyToIssue(tempDir, record.id, "Use the arm runner.");
+		const second = new Date("2026-03-01T00:00:00.000Z");
+		setSystemTime(second);
+		await replyToIssue(tempDir, record.id, "  And pin the image.\n");
+
+		expect(await readFrontmatterOnDisk(record.filePath)).toEqual({
+			...frontmatterBefore,
+			stage: "up-next",
+			updated: second.toISOString(),
+		});
+		expect((await findIssueById(tempDir, record.id))!.body).toBe(body);
+		const text = await Bun.file(record.filePath).text();
+		expect(text).not.toContain("arm runner");
+		expect(text).not.toContain("pin the image");
+		expect((await fs.readdir(getIssuesRoot(tempDir), { recursive: true })).sort()).toEqual(trackedBefore);
+
+		expect(await pendingTexts(tempDir, record.id)).toEqual(["Use the arm runner.", "And pin the image."]);
+		expect([...(await listQueued(tempDir))]).toEqual([record.id]);
+	});
+
+	const columns: Array<{
+		name: string;
+		status: IssueStatus;
+		stage: IssueStage | undefined;
+		expected: IssueStage | undefined;
+	}> = [
+		{ name: "explicit running stage stays running", status: "open", stage: "running", expected: "running" },
+		{
+			name: "in-progress with no stage stays stageless",
+			status: "in-progress",
+			stage: undefined,
+			expected: undefined,
+		},
+		{ name: "in-progress parked in needs-you moves", status: "in-progress", stage: "needs-you", expected: "up-next" },
+		{
+			name: "in-progress awaiting deploy moves",
+			status: "in-progress",
+			stage: "awaiting-deploy",
+			expected: "up-next",
+		},
+		{ name: "plain open work moves", status: "open", stage: undefined, expected: "up-next" },
+		{ name: "deferred work moves", status: "open", stage: "deferred", expected: "up-next" },
+	];
+	for (const column of columns) {
+		it(`Running-column exception: ${column.name}`, async () => {
+			const { record } = await addIssue(tempDir, {
+				category: "infra",
+				title: "Flaky deploy",
+				body: "B.",
+				status: column.status,
+				extra: column.stage === undefined ? {} : { stage: column.stage },
+			});
+
+			await replyToIssue(tempDir, record.id, "Any update?");
+
+			const onDisk = await readFrontmatterOnDisk(record.filePath);
+			expect(onDisk.stage).toBe(column.expected);
+			expect("stage" in onDisk).toBe(column.expected !== undefined);
+			expect(onDisk.status).toBe(column.status);
+			// Whatever the column, the reply itself reaches the turn-end queue.
+			expect(await pendingTexts(tempDir, record.id)).toEqual(["Any update?"]);
+			expect(ids(await listQueuedIssues(tempDir, "session-a"))).toEqual([record.id]);
+		});
+	}
+
+	it("reopens an archived issue as open + up-next, with the reply pending and the issue queued", async () => {
+		const { record } = await addIssue(tempDir, { category: "infra", title: "Flaky deploy", body: "B." });
+		await archiveIssue(tempDir, record.id, { status: "wontfix", reason: "looked fine" });
+
+		const replied = (await replyToIssue(tempDir, record.id, "Still broken on arm.")).record;
+
+		expect(replied.archived).toBe(false);
+		expect(replied.filePath).toBe(record.filePath);
+		// One file for the id: the archive copy is retired, not duplicated.
+		const all = await listIssueRecords(tempDir);
+		expect(all.filter(r => r.id === record.id).map(r => r.archived)).toEqual([false]);
+
+		const onDisk = await readFrontmatterOnDisk(record.filePath);
+		expect(onDisk.status).toBe("open");
+		expect(onDisk.stage).toBe("up-next");
+		expect("archive_reason" in onDisk).toBe(false);
+		expect(await pendingTexts(tempDir, record.id)).toEqual(["Still broken on arm."]);
+		expect(ids(await listQueuedIssues(tempDir, "session-a"))).toEqual([record.id]);
+	});
+
+	it("hands a multi-line reply to the agent byte-for-byte", async () => {
+		const { record } = await addIssue(tempDir, { category: "infra", title: "Flaky deploy", body: "B." });
+		await replyToIssue(tempDir, record.id, TRICKY_TEXT);
+
+		const [pending] = await listReplies(tempDir);
+		expect(pending.text).toBe(TRICKY_TEXT);
+		expect(await takeReply(tempDir, pending, "session-a")).toBe(TRICKY_TEXT);
+		expect(await listReplies(tempDir)).toEqual([]);
+	});
+});
+
+describe("issues store: appendReplyHistory", () => {
+	it("adds the ## Replies header once, appends entries in order, and adds no frontmatter keys", async () => {
+		const { record } = await addIssue(tempDir, {
+			category: "infra",
+			title: "Flaky deploy",
+			body: "Original body.",
+			extra: { stage: "up-next" },
+		});
+		const { updated: _updatedBefore, ...frontmatterBefore } = await readFrontmatterOnDisk(record.filePath);
+
+		await appendReplyHistory(tempDir, record.id, "Use the arm runner.", "2026-01-01T00:00:00.000Z");
+		await appendReplyHistory(tempDir, record.id, `  ${TRICKY_TEXT}\n`, "2026-01-02T00:00:00.000Z");
+
+		const after = (await findIssueById(tempDir, record.id))!;
+		expect(after.body).toBe(
+			[
+				"Original body.",
+				"",
+				"## Replies",
+				"",
+				"### User reply · 2026-01-01T00:00:00.000Z",
+				"",
+				"Use the arm runner.",
+				"",
+				"### User reply · 2026-01-02T00:00:00.000Z",
+				"",
+				TRICKY_TEXT,
+			].join("\n"),
+		);
+		const { updated: _updatedAfter, ...frontmatterAfter } = await readFrontmatterOnDisk(record.filePath);
+		expect(frontmatterAfter).toEqual(frontmatterBefore);
+	});
+
+	it("returns undefined for an issue that vanished before delivery was recorded", async () => {
+		expect(await appendReplyHistory(tempDir, 999, "Hello", "2026-01-01T00:00:00.000Z")).toBeUndefined();
+		expect(await listIssueRecords(tempDir)).toEqual([]);
+	});
+});
+
+describe("issues store: turn-end queue", () => {
+	afterEach(() => {
+		setSystemTime();
+	});
+
+	async function upNext(title: string) {
+		return (await addIssue(tempDir, { category: "infra", title, body: "B.", extra: { stage: "up-next" } })).record;
+	}
+
+	it("a committed up-next stage without a local queue mark is not queued", async () => {
+		const record = await upNext("Up next in a clone");
+		expect(await listQueuedIssues(tempDir, "session-a")).toEqual([]);
+
+		await setQueued(tempDir, record.id, true);
+		expect(ids(await listQueuedIssues(tempDir, "session-a"))).toEqual([record.id]);
+	});
+
+	// `archiveIssue` keeps the stale `stage: up-next`, so only the archived check drops it.
+	const movedOn: Array<{ name: string; act: (id: number) => Promise<unknown> }> = [
+		{ name: "moved to needs-you", act: id => moveIssue(tempDir, id, { stage: "needs-you" }) },
+		{ name: "archived", act: id => archiveIssue(tempDir, id, { reason: "done" }) },
+		{ name: "deleted", act: async id => fs.rm((await findIssueById(tempDir, id))!.filePath) },
+	];
+	for (const row of movedOn) {
+		it(`a queued issue the agent ${row.name} leaves the queue and its mark is pruned`, async () => {
+			const record = await upNext("Flaky deploy");
+			const other = await upNext("Still queued");
+			await setQueued(tempDir, record.id, true);
+			await setQueued(tempDir, other.id, true);
+
+			await row.act(record.id);
+
+			expect(ids(await listQueuedIssues(tempDir, "session-a"))).toEqual([other.id]);
+			expect([...(await listQueued(tempDir))]).toEqual([other.id]);
+		});
+	}
+
+	it("puts replied issues first, oldest reply first, and hides issues another session claimed", async () => {
+		const queuedLow = await upNext("Queued low");
+		const queuedHigh = await upNext("Queued high");
+		const repliedLater = (
+			await addIssue(tempDir, { category: "infra", title: "Replied later", body: "B.", extra: { stage: "running" } })
+		).record;
+		const repliedEarlier = (await addIssue(tempDir, { category: "infra", title: "Replied earlier", body: "B." }))
+			.record;
+		// Unqueued up-next work and other columns never show up.
+		await upNext("Not queued here");
+		await addIssue(tempDir, { category: "infra", title: "Needs you", body: "B.", extra: { stage: "needs-you" } });
+		await setQueued(tempDir, queuedLow.id, true);
+		await setQueued(tempDir, queuedHigh.id, true);
+		// Reply order defeats id order: the higher id replied first.
+		setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+		await replyToIssue(tempDir, repliedEarlier.id, "First.");
+		setSystemTime(new Date("2026-01-02T00:00:00.000Z"));
+		await replyToIssue(tempDir, repliedLater.id, "Second.");
+		setSystemTime();
+
+		const everything = [repliedEarlier.id, repliedLater.id, queuedLow.id, queuedHigh.id];
+		expect(ids(await listQueuedIssues(tempDir, "session-a"))).toEqual(everything);
+
+		expect(await claim(tempDir, queuedLow.id, "session-b")).toBe(true);
+		expect(await claim(tempDir, repliedEarlier.id, "session-b")).toBe(true);
+
+		expect(ids(await listQueuedIssues(tempDir, "session-a"))).toEqual([repliedLater.id, queuedHigh.id]);
+		// The claimant keeps seeing its own claims, in the same order.
+		expect(ids(await listQueuedIssues(tempDir, "session-b"))).toEqual(everything);
+	});
+});
+
+describe("issues store: multi-line frontmatter values", () => {
+	it("round-trips a multi-line value exactly through add, moves, archive, unarchive and a file rewrite", async () => {
+		const { record } = await addIssue(tempDir, {
+			category: "infra",
+			title: "Flaky deploy",
+			body: "B.",
+			extra: { notes: TRICKY_TEXT },
+		});
+		const notesNow = async () => {
+			const found = (await findIssueById(tempDir, record.id))!;
+			return [found.frontmatter.notes, (await readFrontmatterOnDisk(found.filePath)).notes];
+		};
+		expect(await notesNow()).toEqual([TRICKY_TEXT, TRICKY_TEXT]);
+
+		await moveIssue(tempDir, record.id, { stage: "running" });
+		expect(await notesNow()).toEqual([TRICKY_TEXT, TRICKY_TEXT]);
+		await archiveIssue(tempDir, record.id);
+		expect(await notesNow()).toEqual([TRICKY_TEXT, TRICKY_TEXT]);
+		await unarchiveIssue(tempDir, record.id);
+		expect(await notesNow()).toEqual([TRICKY_TEXT, TRICKY_TEXT]);
+		// An agent writing the file back exactly as it read it.
+		await saveIssueContent(tempDir, record.id, await Bun.file(record.filePath).text());
+		expect(await notesNow()).toEqual([TRICKY_TEXT, TRICKY_TEXT]);
+	});
+});
+
+describe("issues store: report link", () => {
+	const malformed = [
+		"reports://personal/flaky-deploy",
+		"report://personal",
+		"report://personal/flaky/deploy",
+		"report://personal/flaky deploy",
+		"ftp://reports.example.com/x",
+		"https://",
+		"see report://personal/flaky-deploy",
+	];
+
+	it("addIssue rejects a malformed report before creating any file", async () => {
+		for (const report of malformed) {
+			await expect(
+				addIssue(tempDir, { category: "infra", title: "Bad report", body: "B.", report }),
+			).rejects.toThrow(/invalid report/);
+		}
+		expect(await listIssueRecords(tempDir)).toEqual([]);
+		expect(await Bun.file(path.join(getIssuesRoot(tempDir), ".next-id")).exists()).toBe(false);
+	});
+
+	for (const report of [
+		"report://personal/flaky-deploy",
+		"https://reports.example.com/personal/flaky-deploy?v=2#top",
+	]) {
+		it(`keeps a ${report.split(":")[0]}:// report through moves, archive, unarchive and a reopening reply`, async () => {
+			const { record } = await addIssue(tempDir, { category: "infra", title: "Flaky deploy", body: "B.", report });
+			const reportOnDisk = async () =>
+				(await readFrontmatterOnDisk((await findIssueById(tempDir, record.id))!.filePath)).report;
+			expect(await reportOnDisk()).toBe(report);
+
+			const steps: Array<() => Promise<unknown>> = [
+				() => moveIssue(tempDir, record.id, { stage: "running" }),
+				() => moveIssue(tempDir, record.id, { stage: null, status: "fixed", reason: "done" }),
+				() => unarchiveIssue(tempDir, record.id),
+				() => archiveIssue(tempDir, record.id, { status: "wontfix" }),
+				() => replyToIssue(tempDir, record.id, "Reopen it."),
+			];
+			for (const step of steps) {
+				await step();
+				expect(await reportOnDisk()).toBe(report);
+			}
+		});
+	}
 });

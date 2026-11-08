@@ -25,6 +25,7 @@ import {
 	toolCard,
 	toolHeader,
 } from "@this-is-my-omp/render";
+import type { RepliesDetails } from "./replies";
 import type { IssueSeverity, IssueStatus, IssueSummary } from "./store";
 import type { IssueFilters, IssuesToolDetails, IssuesToolParams } from "./tool";
 
@@ -209,6 +210,37 @@ export function renderIssuesResult(
 		default:
 			return addCard(theme, details, options.expanded);
 	}
+}
+
+/**
+ * `registerMessageRenderer` callback for {@link REPLIES_MESSAGE_TYPE}: the
+ * reminder that delivered queued board replies on this prompt.
+ *
+ * Collapsed, one compact row per reply keeps the prompt header small; expanded
+ * returns `undefined` so the frame falls back to the reminder text itself, which
+ * is where the verbatim reply bodies are.
+ */
+export function renderRepliesMessage(
+	message: { details?: unknown },
+	options: { expanded: boolean },
+	theme: Theme,
+): Component | undefined {
+	const details = message.details as RepliesDetails | undefined;
+	if (details === undefined || details.replies.length === 0) return undefined;
+	if (options.expanded) return undefined;
+	const count = details.replies.length;
+	return toolCard(theme, {
+		header: {
+			tool: "Issue replies",
+			icon: "success",
+			title: `${count} ${count === 1 ? "reply" : "replies"}`,
+		},
+		body: collapsedList(details.replies, reply => `${theme.fg("accent", reply.url)} ${inline(reply.title)}`, {
+			expanded: false,
+			noun: "reply",
+			theme,
+		}),
+	});
 }
 
 /**

@@ -26,6 +26,17 @@
         "@this-is-my-omp/render": "workspace:*",
       },
     },
+    "packages/issues-board": {
+      "name": "omp-issues-board",
+      "version": "0.1.0",
+      "bin": {
+        "omp-board": "bin/omp-board",
+      },
+      "dependencies": {
+        "@this-is-my-omp/render": "workspace:*",
+        "omp-issues": "workspace:*",
+      },
+    },
     "packages/knowledge": {
       "name": "omp-knowledge",
       "version": "0.1.0",
@@ -80,6 +91,8 @@
     "omp-git-checkpoint": ["omp-git-checkpoint@workspace:packages/git-checkpoint"],
 
     "omp-issues": ["omp-issues@workspace:packages/issues"],
+
+    "omp-issues-board": ["omp-issues-board@workspace:packages/issues-board"],
 
     "omp-knowledge": ["omp-knowledge@workspace:packages/knowledge"],
 

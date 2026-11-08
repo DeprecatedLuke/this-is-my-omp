@@ -1,0 +1,14 @@
+{
+	"name": "omp-issues-board",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "Terminal issue list for the omp-issues tracker (.omp/issues)",
+	"bin": {
+		"omp-board": "bin/omp-board"
+	},
+	"dependencies": {
+		"@this-is-my-omp/render": "workspace:*",
+		"omp-issues": "workspace:*"
+	}
+}

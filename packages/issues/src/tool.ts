@@ -38,6 +38,10 @@ const addParams = z.object({
 	body: z.string().min(1).describe("markdown body; describe the bug, then add `## Fix` steps"),
 	severity: severityEnum.optional(),
 	status: statusEnum.optional(),
+	report: z
+		.string()
+		.describe("report this issue is written up in: `report://<project>/<slug>` or an `https://` URL")
+		.optional(),
 	location: z.array(z.string()).describe("`path` or `path:line[-line]` references").optional(),
 	extra: z.record(z.string(), z.unknown()).describe("extra frontmatter fields").optional(),
 });
@@ -174,6 +178,7 @@ async function executeAdd(
 		body: params.body,
 		severity: params.severity,
 		status: params.status,
+		report: params.report,
 		location: params.location,
 		extra: params.extra,
 	};

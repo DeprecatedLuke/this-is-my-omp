@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Launcher for the omp issues board.
+#
+# Resolves its own real path through symlinks (so a symlink in ~/.local/bin works)
+# and runs the board's TypeScript entrypoint with Bun. Bun resolves the monorepo
+# root tsconfig `paths` from the entrypoint's location, so the board works from any
+# working directory.
+set -euo pipefail
+
+self=${BASH_SOURCE[0]}
+while [ -L "$self" ]; do
+	link=$(readlink "$self")
+	case $link in
+		/*) self=$link ;;
+		*) self=$(dirname "$self")/$link ;;
+	esac
+done
+pkg=$(cd -- "$(dirname -- "$self")/.." && pwd -P)
+
+bun=$(command -v bun || true)
+if [ -z "$bun" ]; then
+	for candidate in "$HOME/.bun/bin/bun" "$HOME/.local/bin/bun"; do
+		if [ -x "$candidate" ]; then
+			bun=$candidate
+			break
+		fi
+	done
+fi
+if [ -z "$bun" ]; then
+	printf 'omp-board: bun not found on PATH\n' >&2
+	exit 127
+fi
+
+# `e` runs nvim as a child of bun. If bun is wrapped in a bwrap sandbox that binds
+# nvim's config, plugin and state dirs only when SANDBOX_NVIM=1 is set, the nested
+# nvim inherits that sandbox; the variable is harmless everywhere else.
+export SANDBOX_NVIM=1
+
+exec "$bun" "$pkg/src/main.ts" "$@"

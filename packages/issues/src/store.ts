@@ -13,13 +13,19 @@
  * produce two files with the same id.
  *
  * Filenames carry the id as a left-anchored prefix (`<id>-<slug>.md`) and
- * are looked up by id alone via {@link findIssueById}; the slug part is
- * for human readability in `ls` and the URL handler accepts either form.
+ * are looked up by id alone via {@link findIssueById}; the slug part is for
+ * human readability in `ls` and the URL handler accepts either form.
+ *
+ * Everything under `.omp/issues` is committed, so it holds only what belongs in
+ * git: the issue itself, its `stage`, and the delivered-reply history in the
+ * body. Pending replies, queue marks and session claims are machine-local and
+ * live in the inbox ({@link ./inbox.ts}).
  */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { isEnoent, isEnotempty, parseFrontmatter } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
+import { addReply, claimOwner, listQueued, listReplies, type PendingReply, setQueued } from "./inbox";
 
 /** Severity bucket. */
 export type IssueSeverity = "low" | "medium" | "high" | "critical";
@@ -28,11 +34,21 @@ export type IssueSeverity = "low" | "medium" | "high" | "critical";
  *  of truth; `status` is metadata that the agent and renderers can read. */
 export type IssueStatus = "open" | "in-progress" | "fixed" | "wontfix" | "duplicate";
 
+/** Board stage: where an active issue sits beyond its status. Optional; an
+ *  issue without one is plain open work. Archived issues never carry one. */
+export type IssueStage = "needs-you" | "up-next" | "running" | "awaiting-deploy" | "deferred";
+
+/** Every stage, in board state order. */
+export const ISSUE_STAGES: readonly IssueStage[] = ["needs-you", "up-next", "running", "awaiting-deploy", "deferred"];
+
 export interface IssueFrontmatter {
 	title: string;
 	category?: string;
 	severity?: IssueSeverity;
 	status?: IssueStatus;
+	stage?: IssueStage;
+	/** Report this issue is written up in: `report://<project>/<slug>` or an `http(s)://` URL. */
+	report?: string;
 	location?: string[];
 	created?: string;
 	updated?: string;
@@ -71,6 +87,8 @@ export interface AddIssueInput {
 	body: string;
 	severity?: IssueSeverity;
 	status?: IssueStatus;
+	/** Report URL this issue is written up in. */
+	report?: string;
 	location?: string[];
 	/** Extra frontmatter fields to merge in (e.g. `confidence`, `file_path`). */
 	extra?: Record<string, unknown>;
@@ -258,7 +276,10 @@ function buildFilename(id: number, slug: string): string {
 
 const YAML_NEEDS_QUOTE = /[:#&*!|>'"%@`{}[\]]|^[-?]|^\s|\s$|^$/;
 function yamlScalar(value: string): string {
-	if (!YAML_NEEDS_QUOTE.test(value) && !/[\n]/.test(value)) return value;
+	// Single-quoted scalars fold line breaks into spaces; a JSON string is a valid
+	// YAML double-quoted scalar that keeps every `\n` intact.
+	if (/[\r\n]/.test(value)) return JSON.stringify(value);
+	if (!YAML_NEEDS_QUOTE.test(value)) return value;
 	// Single-quote with internal `'` doubled — covers every printable ASCII +
 	// Unicode case we ever put in frontmatter (titles, paths, statuses).
 	return `'${value.replace(/'/g, "''")}'`;
@@ -280,7 +301,7 @@ function yamlValueLine(key: string, value: unknown): string[] {
 }
 
 function formatFrontmatter(frontmatter: IssueFrontmatter): string {
-	const preferred = ["title", "category", "severity", "status", "created", "updated", "location"];
+	const preferred = ["title", "category", "severity", "status", "stage", "report", "created", "updated", "location"];
 	const lines: string[] = [];
 	for (const key of preferred) {
 		if (frontmatter[key] !== undefined) lines.push(...yamlValueLine(key, frontmatter[key]));
@@ -312,6 +333,8 @@ function coerceFrontmatter(raw: Record<string, unknown>): IssueFrontmatter {
 	if (typeof raw.category === "string") out.category = raw.category;
 	if (typeof raw.severity === "string") out.severity = raw.severity as IssueSeverity;
 	if (typeof raw.status === "string") out.status = raw.status as IssueStatus;
+	if (typeof raw.stage === "string") out.stage = raw.stage as IssueStage;
+	if (typeof raw.report === "string") out.report = raw.report;
 	if (typeof raw.created === "string") out.created = raw.created;
 	if (typeof raw.updated === "string") out.updated = raw.updated;
 	const location = asStringArray(raw.location);
@@ -382,6 +405,28 @@ function recordToSummary(record: IssueRecord): IssueSummary {
 		created: record.frontmatter.created,
 		filename: record.filename,
 	};
+}
+
+/**
+ * Every issue, active and archived, with full frontmatter and body, from one
+ * filesystem scan. Unlike {@link listIssues} this keeps the records (not
+ * summaries) and applies no filtering — the board needs the whole set at once.
+ */
+export async function listIssueRecords(cwd: string): Promise<IssueRecord[]> {
+	const scan = await scanFilesystem(cwd);
+	const records: IssueRecord[] = [];
+	for (const entry of scan.records) {
+		try {
+			records.push(await readIssueFromPath(entry.filePath, entry.id, entry.category, entry.archived));
+		} catch (err) {
+			// A concurrent archive/unarchive can retire a file between the scan
+			// and the read; the next scan sees its new location.
+			if (isEnoent(err)) continue;
+			throw err;
+		}
+	}
+	records.sort((a, b) => b.id - a.id);
+	return records;
 }
 
 /**
@@ -479,9 +524,12 @@ export async function addIssue(cwd: string, input: AddIssueInput): Promise<AddIs
 		status: input.status ?? "open",
 		created: createdAt,
 		updated: createdAt,
+		report: input.report,
 		location: input.location && input.location.length > 0 ? input.location : undefined,
 		...input.extra,
 	};
+	assertValidStage(frontmatter.stage, "Issue rejected: ");
+	assertValidReport(frontmatter.report, "Issue rejected: ");
 	const content = serializeIssue(frontmatter, body);
 
 	return withIdAllocationLock(cwd, async () => {
@@ -543,6 +591,30 @@ const ISSUE_STATUSES: ReadonlySet<string> = new Set<IssueStatus>([
 ]);
 /** Severities accepted in issue frontmatter (the metadata-edit validation set). */
 const ISSUE_SEVERITIES: ReadonlySet<string> = new Set<IssueSeverity>(["low", "medium", "high", "critical"]);
+/** Stages accepted in issue frontmatter (the board's state set). */
+const ISSUE_STAGE_SET: ReadonlySet<string> = new Set<string>(ISSUE_STAGES);
+/** A `report://<project>/<slug>` handle or an absolute `http(s)://` URL. */
+const REPORT_URL_RE = /^(?:report:\/\/[^/\s?#]+\/[^/\s?#]+|https?:\/\/[^\s/?#]+\S*)$/;
+
+/**
+ * Reject a `stage` outside {@link ISSUE_STAGES}. `label` names the write path so
+ * the message reads like the surrounding status/severity rejections.
+ */
+function assertValidStage(stage: unknown, label: string): void {
+	if (stage === undefined || stage === null) return;
+	if (typeof stage === "string" && ISSUE_STAGE_SET.has(stage)) return;
+	throw new Error(`${label}invalid stage '${String(stage)}'. Use one of: ${ISSUE_STAGES.join(", ")}.`);
+}
+
+/**
+ * Reject a `report` that is neither a `report://<project>/<slug>` handle nor an
+ * `http(s)://` URL, so the board never renders a dead link.
+ */
+function assertValidReport(report: unknown, label: string): void {
+	if (report === undefined || report === null) return;
+	if (typeof report === "string" && REPORT_URL_RE.test(report)) return;
+	throw new Error(`${label}invalid report '${String(report)}'. Use report://<project>/<slug> or an http(s):// URL.`);
+}
 
 function shouldBeArchived(status: IssueStatus | undefined, currentArchived: boolean): boolean {
 	if (!status) return currentArchived;
@@ -585,6 +657,31 @@ async function pruneEmptyCategoryDir(cwd: string, categoryDir: string): Promise<
 }
 
 /**
+ * Write `frontmatter` + `body` to the issue's target location, then drop the old
+ * file when the target differs. Every lifecycle transition (archive, unarchive,
+ * metadata edit, board move) goes through here so they all create the target
+ * directory, retire the source file, and prune an emptied category the same way.
+ */
+async function writeIssueRecord(
+	cwd: string,
+	current: IssueRecord,
+	target: { category: string; filename: string; archived: boolean },
+	frontmatter: IssueFrontmatter,
+	body: string,
+): Promise<IssueRecord> {
+	const root = target.archived ? getArchiveRoot(cwd) : getIssuesRoot(cwd);
+	const dir = path.join(root, target.category);
+	const filePath = path.join(dir, target.filename);
+	await fs.mkdir(dir, { recursive: true });
+	await Bun.write(filePath, serializeIssue(frontmatter, body));
+	if (filePath !== current.filePath) {
+		await fs.rm(current.filePath, { force: true });
+		await pruneEmptyCategoryDir(cwd, path.dirname(current.filePath));
+	}
+	return readIssueFromPath(filePath, current.id, target.category, target.archived);
+}
+
+/**
  * Parse and validate an edited issue file (frontmatter + body). The frontmatter
  * is the metadata layer the store derives title/status/category from, so a write
  * that drops the `---` fences, ships unparseable YAML, or carries an out-of-enum
@@ -622,6 +719,8 @@ function parseIssueFileContent(content: string, source: string): { frontmatter: 
 			`issues:// write rejected: invalid severity '${frontmatter.severity}'. Use one of: low, medium, high, critical.`,
 		);
 	}
+	assertValidStage(frontmatter.stage, "issues:// write rejected: ");
+	assertValidReport(frontmatter.report, "issues:// write rejected: ");
 	frontmatter.title = title;
 	return { frontmatter, body: parsed.body };
 }
@@ -664,28 +763,18 @@ export async function saveIssueContent(cwd: string, id: number, content: string)
 
 	const nextSlug = slugifyTitle(nextTitle);
 	const nextFilename = buildFilename(current.id, nextSlug);
-	const nextRoot = nextArchived
-		? path.join(getArchiveRoot(cwd), nextCategory)
-		: path.join(getIssuesRoot(cwd), nextCategory);
-	const nextPath = path.join(nextRoot, nextFilename);
 
 	const moved = nextCategory !== current.category;
 	const renamed = nextFilename !== current.filename;
 	const transitioned = nextArchived !== current.archived;
 
-	await fs.mkdir(nextRoot, { recursive: true });
-	const serialized = serializeIssue(frontmatter, body);
-
-	if (nextPath !== current.filePath) {
-		await Bun.write(nextPath, serialized);
-		await fs.rm(current.filePath, { force: true });
-		// A cross-category/archive move can leave the source category empty.
-		await pruneEmptyCategoryDir(cwd, path.dirname(current.filePath));
-	} else {
-		await Bun.write(current.filePath, serialized);
-	}
-
-	const record = await readIssueFromPath(nextPath, current.id, nextCategory, nextArchived);
+	const record = await writeIssueRecord(
+		cwd,
+		current,
+		{ category: nextCategory, filename: nextFilename, archived: nextArchived },
+		frontmatter,
+		body,
+	);
 	return { record, moved, renamed, transitioned, wasArchived: current.archived };
 }
 
@@ -715,16 +804,13 @@ export async function archiveIssue(
 		frontmatter.archive_reason = options.reason.trim();
 	}
 
-	const targetDir = path.join(getArchiveRoot(cwd), current.category);
-	await fs.mkdir(targetDir, { recursive: true });
-	const targetPath = path.join(targetDir, current.filename);
-	const content = serializeIssue(frontmatter, current.body);
-	await Bun.write(targetPath, content);
-	await fs.rm(current.filePath, { force: true });
-	// Archiving the last active issue in a category empties its dir.
-	await pruneEmptyCategoryDir(cwd, path.dirname(current.filePath));
-
-	const record = await readIssueFromPath(targetPath, current.id, current.category, true);
+	const record = await writeIssueRecord(
+		cwd,
+		current,
+		{ category: current.category, filename: current.filename, archived: true },
+		frontmatter,
+		current.body,
+	);
 	return { record, wasArchived: false };
 }
 
@@ -752,18 +838,204 @@ export async function unarchiveIssue(
 	};
 	delete frontmatter.archive_reason;
 
-	const targetDir = path.join(getIssuesRoot(cwd), current.category);
-	await fs.mkdir(targetDir, { recursive: true });
-	const targetPath = path.join(targetDir, current.filename);
-	const content = serializeIssue(frontmatter, current.body);
-	await Bun.write(targetPath, content);
-	await fs.rm(current.filePath, { force: true });
-	// Unarchiving the last issue in an archived category empties its dir (and
-	// possibly the archive root, which `pruneEmptyCategoryDir` handles).
-	await pruneEmptyCategoryDir(cwd, path.dirname(current.filePath));
-
-	const record = await readIssueFromPath(targetPath, current.id, current.category, false);
+	const record = await writeIssueRecord(
+		cwd,
+		current,
+		{ category: current.category, filename: current.filename, archived: false },
+		frontmatter,
+		current.body,
+	);
 	return { record, wasActive: false };
+}
+
+export interface IssueMove {
+	/** Target stage; `null` clears the key. */
+	stage: IssueStage | null;
+	/** Target status. A terminal one archives, an active one unarchives. */
+	status?: IssueStatus;
+	/** Recorded as `archive_reason` when the move lands in the archive. */
+	reason?: string;
+}
+
+/**
+ * Move an issue to a board state: set or clear its `stage`, and optionally
+ * drive the lifecycle with `status` (terminal archives, active unarchives).
+ * The record is re-read from disk immediately before the write, so a concurrent
+ * agent edit is never clobbered by a stale in-memory copy; every other
+ * frontmatter key and the body survive untouched, and `updated` is bumped.
+ */
+export async function moveIssue(cwd: string, id: number, move: IssueMove): Promise<IssueRecord> {
+	assertValidStage(move.stage, "Issue move rejected: ");
+	if (move.status !== undefined && !ISSUE_STATUSES.has(move.status)) {
+		throw new Error(
+			`Issue move rejected: invalid status '${move.status}'. Use one of: open, in-progress, fixed, wontfix, duplicate.`,
+		);
+	}
+
+	const current = await findIssueById(cwd, id);
+	if (!current) throw new Error(`Issue #${id} not found.`);
+
+	const nextStatus = move.status ?? current.frontmatter.status;
+	const nextArchived = shouldBeArchived(nextStatus, current.archived);
+	const frontmatter: IssueFrontmatter = {
+		...current.frontmatter,
+		status: nextStatus,
+		updated: nowIso(),
+	};
+	// `stage` only describes active work; the archive is terminal.
+	if (move.stage === null || nextArchived) {
+		delete frontmatter.stage;
+	} else {
+		frontmatter.stage = move.stage;
+	}
+	if (nextArchived) {
+		if (move.reason !== undefined && move.reason.trim().length > 0) {
+			frontmatter.archive_reason = move.reason.trim();
+		}
+	} else {
+		delete frontmatter.archive_reason;
+	}
+
+	return writeIssueRecord(
+		cwd,
+		current,
+		{ category: current.category, filename: current.filename, archived: nextArchived },
+		frontmatter,
+		current.body,
+	);
+}
+
+/**
+ * True when the issue is in the board's Running state: an explicit `running`
+ * stage, or `status: in-progress` with no stage at all. A reply to such an issue
+ * must not drag it out of Running.
+ */
+function isRunningColumn(record: IssueRecord): boolean {
+	if (record.archived) return false;
+	const stage = record.frontmatter.stage;
+	if (stage !== undefined) return stage === "running";
+	return record.frontmatter.status === "in-progress";
+}
+
+export interface ReplyToIssueResult {
+	record: IssueRecord;
+	/** The queued reply, now pending in the local inbox. */
+	reply: PendingReply;
+}
+
+/**
+ * Queue a user reply (typed on `omp-board`) for the next agent prompt. The reply
+ * text is machine-local — it lives in the inbox, never in the git-tracked issue —
+ * so a commit can neither ship a session's half-delivered reply nor let a cloned
+ * repo's text drive an agent. The git side only records that the user wants this
+ * worked: an archived issue reopens as `open` + `up-next`, a Running issue keeps
+ * its stage, and everything else moves to `up-next`.
+ */
+export async function replyToIssue(root: string, id: number, text: string): Promise<ReplyToIssueResult> {
+	const trimmed = text.trim();
+	if (trimmed.length === 0) throw new Error("Reply is empty.");
+	const found = await findIssueById(root, id);
+	if (!found) throw new Error(`Issue #${id} not found.`);
+
+	const reply = await addReply(root, id, trimmed);
+	await setQueued(root, id, true);
+
+	const frontmatter: IssueFrontmatter = { ...found.frontmatter, updated: nowIso() };
+	if (found.archived) {
+		// The user asking for work is a new lifecycle: reopen it on the board.
+		frontmatter.status = "open";
+		frontmatter.stage = "up-next";
+		delete frontmatter.archive_reason;
+	} else if (!isRunningColumn(found)) {
+		frontmatter.stage = "up-next";
+	}
+	const record = await writeIssueRecord(
+		root,
+		found,
+		{ category: found.category, filename: found.filename, archived: false },
+		frontmatter,
+		found.body,
+	);
+	return { record, reply };
+}
+
+/**
+ * Record a delivered reply in the issue body: `## Replies` once, then one
+ * `### User reply · <at>` entry per delivered text. This is the only trace a
+ * reply leaves in git, and it is history, not a queue.
+ */
+export async function appendReplyHistory(
+	root: string,
+	id: number,
+	text: string,
+	at: string,
+): Promise<IssueRecord | undefined> {
+	const current = await findIssueById(root, id);
+	if (!current) return undefined;
+	let body = current.body.replace(/\s+$/, "");
+	if (!/^## Replies$/m.test(body)) {
+		body = body.length > 0 ? `${body}\n\n## Replies` : "## Replies";
+	}
+	body = `${body}\n\n### User reply · ${at}\n\n${text.trim()}\n`;
+	return writeIssueRecord(
+		root,
+		current,
+		{ category: current.category, filename: current.filename, archived: current.archived },
+		{ ...current.frontmatter, updated: nowIso() },
+		body,
+	);
+}
+
+/**
+ * The turn-end queue: issues with a pending reply, plus active `up-next` issues
+ * the user queued on this machine — minus anything another session claimed.
+ * Pending replies come first (oldest first) so a reply is never starved by plain
+ * queued work.
+ *
+ * A committed `stage: up-next` alone is not a queue entry: only a local queue
+ * mark counts, so a cloned repo's stage cannot drive this machine's agents. A
+ * mark whose issue is gone, archived, or no longer `up-next` (the agent moved it
+ * on) is pruned here.
+ */
+export async function listQueuedIssues(root: string, sessionId: string): Promise<IssueRecord[]> {
+	const records = await listIssueRecords(root);
+	const byId = new Map(records.map(record => [record.id, record]));
+	const queued = await listQueued(root);
+	for (const id of queued) {
+		const record = byId.get(id);
+		if (record && !record.archived && record.frontmatter.stage === "up-next") continue;
+		await setQueued(root, id, false);
+		queued.delete(id);
+	}
+
+	// Oldest pending reply per issue decides its place in the queue.
+	const replyOrder = new Map<number, string>();
+	for (const reply of await listReplies(root)) {
+		if (!replyOrder.has(reply.id)) replyOrder.set(reply.id, reply.at);
+	}
+	const candidates: IssueRecord[] = [];
+	for (const id of replyOrder.keys()) {
+		const record = byId.get(id);
+		if (record) candidates.push(record);
+	}
+	for (const id of queued) {
+		const record = byId.get(id);
+		if (record && !replyOrder.has(id)) candidates.push(record);
+	}
+
+	const visible: IssueRecord[] = [];
+	for (const record of candidates) {
+		const owner = await claimOwner(root, record.id);
+		if (owner === undefined || owner === sessionId) visible.push(record);
+	}
+	return visible.sort((a, b) => {
+		const aAt = replyOrder.get(a.id);
+		const bAt = replyOrder.get(b.id);
+		if (aAt !== undefined && bAt !== undefined) return aAt.localeCompare(bAt) || a.id - b.id;
+		if (aAt !== undefined) return -1;
+		if (bAt !== undefined) return 1;
+		return a.id - b.id;
+	});
 }
 
 /**
