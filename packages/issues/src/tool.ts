@@ -1,5 +1,5 @@
 /**
- * `issues` tool — add, archive, unarchive, and list project-local issues
+ * `issues` tool — add, archive, unarchive, stage, and list project-local issues
  * persisted under `<cwd>/.omp/issues/`. URLs (`issues://`) cover the read side;
  * this tool owns the write side so id allocation, slug derivation, and archive
  * moves stay in one place.
@@ -17,12 +17,14 @@ import { prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import issuesDescription from "./prompts/tool.md" with { type: "text" };
 import { renderIssuesCall, renderIssuesResult } from "./render";
 import { readIssuesSettings } from "./settings";
-import type { AddIssueInput, IssueRecord, IssueSeverity, IssueStatus, IssueSummary } from "./store";
+import type { AddIssueInput, IssueRecord, IssueSeverity, IssueStage, IssueStatus, IssueSummary } from "./store";
 import {
 	addIssue,
 	archiveIssue,
 	findIssueById,
+	ISSUE_STAGES,
 	listIssues,
+	moveIssue,
 	normalizeCategory,
 	renderIssueListing,
 	unarchiveIssue,
@@ -59,6 +61,14 @@ const unarchiveParams = z.object({
 	status: statusEnum.describe("status to record on restore; default `open`").optional(),
 });
 
+const stageParams = z.object({
+	op: z.literal("stage"),
+	id: z.number().int().positive(),
+	stage: z
+		.enum([...ISSUE_STAGES, "none"])
+		.describe("board state to set; `none` clears it, `running` while you work, `needs-you` to hand it back"),
+});
+
 const listParams = z.object({
 	op: z.literal("list"),
 	category: z.string().optional(),
@@ -69,7 +79,7 @@ const listParams = z.object({
 	limit: z.number().int().positive().optional(),
 });
 
-const issuesSchema = z.union([addParams, archiveParams, unarchiveParams, listParams]);
+const issuesSchema = z.union([addParams, archiveParams, unarchiveParams, stageParams, listParams]);
 export type IssuesToolParams = z.infer<typeof issuesSchema>;
 
 /** Filters a `list` call ran with, echoed in `details` so renderers never parse text. */
@@ -94,9 +104,13 @@ export interface IssuesToolDetails {
 	status?: IssueStatus;
 	/** Status the file carried before an `archive`/`unarchive` moved it. */
 	previousStatus?: IssueStatus;
+	/** Board stage the file carries after the op. */
+	stage?: IssueStage;
+	/** Stage the file carried before a `stage` op; absent when it had none. */
+	previousStage?: IssueStage;
 	/** Archive state before an `archive`/`unarchive`, for the transition row. */
 	previousArchived?: boolean;
-	/** `archive`/`unarchive` found the issue already in the requested state. */
+	/** `archive`/`unarchive`/`stage` found the issue already in the requested state. */
 	unchanged?: boolean;
 	listing?: IssueSummary[];
 	/** Filters the `list` op ran with. */
@@ -141,6 +155,7 @@ function detailsFromRecord(op: IssuesToolParams["op"], record: IssueRecord): Iss
 		title: record.frontmatter.title,
 		severity: record.frontmatter.severity,
 		status: record.frontmatter.status,
+		stage: record.frontmatter.stage,
 		bodyPreview: extractBodyPreview(record.body),
 		location: Array.isArray(location) && location.length > 0 ? location[0] : undefined,
 		confidence,
@@ -221,6 +236,24 @@ async function executeUnarchive(
 	return textResult(summarizeRecord(wasActive ? "Already active" : "Unarchived", record), details);
 }
 
+async function executeStage(
+	cwd: string,
+	params: Extract<IssuesToolParams, { op: "stage" }>,
+): Promise<AgentToolResult<IssuesToolDetails>> {
+	const before = await findIssueById(cwd, params.id);
+	// Archived issues carry no stage; say so instead of reporting a stage that was not kept.
+	if (before?.archived) throw new Error(`Issue #${params.id} is archived; unarchive it before setting a stage.`);
+	const record = await moveIssue(cwd, params.id, { stage: params.stage === "none" ? null : params.stage });
+	const details: IssuesToolDetails = {
+		...detailsFromRecord("stage", record),
+		previousStage: before?.frontmatter.stage,
+		unchanged: before?.frontmatter.stage === record.frontmatter.stage,
+	};
+	const text =
+		params.stage === "none" ? `#${record.id} stage cleared` : `#${record.id} stage → ${record.frontmatter.stage}`;
+	return textResult(text, details);
+}
+
 async function executeList(
 	cwd: string,
 	params: Extract<IssuesToolParams, { op: "list" }>,
@@ -274,6 +307,8 @@ export async function runIssuesOp(
 					return await executeArchive(cwd, params);
 				case "unarchive":
 					return await executeUnarchive(cwd, params);
+				case "stage":
+					return await executeStage(cwd, params);
 				case "list":
 					return await executeList(cwd, params);
 			}

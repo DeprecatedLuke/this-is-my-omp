@@ -1,14 +1,13 @@
 /**
  * The board: a list of one checkout's `.omp/issues`, ordered by `updated`.
  *
- * Issues come in three groups — Finished (archived and not yet looked at,
- * newest first), Active (everything not archived, oldest first) and Done
- * (archived and seen, newest first) — one row per issue. Keys — list: `j`/`k`
- * and arrows move, page keys and `g`/`G` jump, `enter` opens the detail view,
- * `r` queues a reply for the next agent prompt, `e` edits the issue file in
- * nvim, `/` filters, `a` toggles the
- * Done window, `1`-`7` set the state, `q`/`ctrl+c` quits. Detail: arrows/`jk`/
- * page keys scroll, `esc` back, `r` reply, `e` edit.
+ * Issues come in three groups — Finished (archived and not yet looked at),
+ * Active (everything not archived) and Done (archived and seen), each newest
+ * `updated` first — one row per issue. Keys — list: `j`/`k` and arrows move,
+ * page keys and `g`/`G` jump, `enter` opens the detail view, `r` queues a reply
+ * for the next agent prompt, `e` edits the issue file in nvim, `/` filters, `a`
+ * toggles the Done window, `1`-`7` set the state, `q`/`ctrl+c` quits. Detail:
+ * arrows/`jk`/page keys scroll, `esc` back, `r` reply, `e` edit.
  */
 
 import * as fs from "node:fs";
@@ -160,7 +159,12 @@ export class BoardComponent implements Component {
 	#groups: ListGroupView[] = [];
 	/** Every selectable row, in display order. */
 	#order: ListEntry[] = [];
-	#selectedId: number | undefined;
+	/**
+	 * Selected row: an index into {@link #order}, not an issue id. {@link #rebuild}
+	 * keeps it on the same issue while other rows move, and on the same index when
+	 * the issue under it moves itself.
+	 */
+	#cursor = 0;
 	#view: "list" | "detail" = "list";
 	#detailId: number | undefined;
 	#markdown: { text: string; width: number; component: Markdown } | undefined;
@@ -222,14 +226,11 @@ export class BoardComponent implements Component {
 	// -- data ------------------------------------------------------------------
 
 	/**
-	 * Reload every issue, its inbox state and the seen state, then put the
-	 * selection back by id. `anchorId` names the issue a caller just moved (its
-	 * group may have changed, so the pre-reload list cannot say where it went);
-	 * otherwise the selected issue is followed.
+	 * Reload every issue, its inbox state and the seen state, then regroup the
+	 * list; {@link #rebuild} decides where the cursor lands.
 	 */
-	async #reload(anchorId?: number): Promise<void> {
+	async #reload(): Promise<void> {
 		if (this.#disposed) return;
-		const anchor = anchorId ?? this.#selectedId;
 		let records: IssueRecord[];
 		let inbox: BoardInbox;
 		let seen: SeenState;
@@ -244,24 +245,40 @@ export class BoardComponent implements Component {
 		this.#records = records;
 		this.#inbox = inbox;
 		this.#seen = seen;
-		this.#rebuild(anchor);
+		this.#rebuild();
 		this.#ui.requestRender();
 	}
 
-	/** Regroup the list, keeping the selection on `anchor` when it is still listed. */
-	#rebuild(anchor?: number): void {
-		const previousIndex = this.#selectedIndex();
+	/**
+	 * Regroup the list and place the cursor.
+	 *
+	 * The cursor follows the issue it is on when *other* issues move (an agent
+	 * edits or archives one, a new issue appears above, the filter or the Done
+	 * window changes the rows around it). When the issue under the cursor moves
+	 * itself — a state change, a reply, an agent update, or opening a Finished
+	 * issue and marking it seen — the cursor stays at its row index instead and
+	 * lands on whatever now occupies that slot. A changed group or `updated`
+	 * stamp is what tells the two apart.
+	 */
+	#rebuild(): void {
+		const selected = this.#order[this.#cursor];
+		const before =
+			selected === undefined
+				? undefined
+				: { id: selected.record.id, group: selected.group, updated: selected.record.frontmatter.updated };
 		this.#groups = buildList(this.#records, {
 			filter: this.#filter,
 			showAllDone: this.#showAllDone,
 			seen: this.#seen,
 		});
 		this.#order = this.#groups.flatMap(view => view.records.map(record => ({ record, group: view.group.id })));
-		if (anchor !== undefined && this.#order.some(entry => entry.record.id === anchor)) this.#selectedId = anchor;
-		else if (this.#selectedId === undefined || !this.#order.some(entry => entry.record.id === this.#selectedId)) {
-			// The issue left the list (moved, archived, filtered out): stay at its position.
-			this.#selectedId = this.#order[Math.min(previousIndex, this.#order.length - 1)]?.record.id;
-		}
+		const after = before === undefined ? undefined : this.#order.find(entry => entry.record.id === before.id);
+		const unmoved =
+			before !== undefined &&
+			after !== undefined &&
+			after.group === before.group &&
+			after.record.frontmatter.updated === before.updated;
+		this.#cursor = unmoved ? this.#order.indexOf(after) : Math.max(0, Math.min(this.#cursor, this.#order.length - 1));
 	}
 
 	/**
@@ -281,20 +298,8 @@ export class BoardComponent implements Component {
 		this.#inbox = { replies, claims: this.#inbox.claims };
 	}
 
-	#selectedIndex(): number {
-		const index = this.#order.findIndex(entry => entry.record.id === this.#selectedId);
-		return Math.max(index, 0);
-	}
-
 	#selectedEntry(): ListEntry | undefined {
-		return this.#order.find(entry => entry.record.id === this.#selectedId) ?? this.#order[0];
-	}
-
-	/** Select `id` when it is listed; ignores unknown ids. */
-	#selectIssue(id: number): boolean {
-		if (!this.#order.some(entry => entry.record.id === id)) return false;
-		this.#selectedId = id;
-		return true;
+		return this.#order[this.#cursor];
 	}
 
 	/** `--issue`/herdr handoff: show the issue (archived ones need the full window) and open it. */
@@ -306,9 +311,14 @@ export class BoardComponent implements Component {
 		}
 		if (record.archived && !this.#showAllDone) {
 			this.#showAllDone = true;
-			this.#rebuild(id);
+			this.#rebuild();
 		}
-		this.#selectIssue(id);
+		const index = this.#order.findIndex(entry => entry.record.id === id);
+		if (index < 0) {
+			this.#setStatus("error", `issue #${id} not listed`);
+			return;
+		}
+		this.#cursor = index;
 		this.#openDetail();
 	}
 
@@ -329,15 +339,13 @@ export class BoardComponent implements Component {
 
 	#moveSelection(delta: number): void {
 		if (this.#order.length === 0) return;
-		const next = Math.max(0, Math.min(this.#order.length - 1, this.#selectedIndex() + delta));
-		this.#selectedId = this.#order[next]!.record.id;
+		this.#cursor = Math.max(0, Math.min(this.#order.length - 1, this.#cursor + delta));
 		this.#ui.requestRender();
 	}
 
 	#selectEdge(edge: "first" | "last"): void {
-		const entry = edge === "first" ? this.#order[0] : this.#order.at(-1);
-		if (!entry) return;
-		this.#selectedId = entry.record.id;
+		if (this.#order.length === 0) return;
+		this.#cursor = edge === "first" ? 0 : this.#order.length - 1;
 		this.#ui.requestRender();
 	}
 
@@ -365,8 +373,8 @@ export class BoardComponent implements Component {
 			await releaseClaim(this.#root, id);
 			await setQueued(this.#root, id, state === "up-next");
 			this.#status = { text: `#${id} → ${stateTitle(state)}`, tone: "success" };
-			// The issue's group may have changed, so the reload is told which one to follow.
-			await this.#reload(id);
+			// The issue's group may have changed; the cursor stays at its row.
+			await this.#reload();
 		} catch (error) {
 			this.#setStatus("error", `#${id}: ${error instanceof Error ? error.message : String(error)}`);
 		} finally {
@@ -387,26 +395,19 @@ export class BoardComponent implements Component {
 
 	/**
 	 * Opening a Finished issue is the user seeing it: it moves to Done. The cursor
-	 * does not follow it down there — a seen issue is dealt with — but stays in
-	 * place on the row that takes its slot, usually the next Finished issue.
+	 * stays at its row, which now holds whatever issue takes that slot.
 	 */
 	async #markSeen(entry: ListEntry): Promise<void> {
 		if (entry.group !== "finished" || !isUnseen(entry.record, this.#seen)) return;
 		const stamp = entry.record.frontmatter.updated;
 		if (stamp === undefined) return;
-		const index = this.#order.findIndex(candidate => candidate.record.id === entry.record.id);
-		const successor = this.#order[index + 1] ?? this.#order[index - 1];
-		// Move the selection before the write, so the watcher's reload of the
-		// seen file cannot anchor on the issue that is about to sink.
-		if (successor) this.#selectedId = successor.record.id;
 		try {
 			await markSeen(this.#root, entry.record.id, stamp);
 		} catch (error) {
-			this.#selectedId = entry.record.id;
 			this.#setStatus("error", `#${entry.record.id}: ${error instanceof Error ? error.message : String(error)}`);
 			return;
 		}
-		await this.#reload(this.#selectedId);
+		await this.#reload();
 	}
 
 	async #edit(): Promise<void> {
@@ -439,13 +440,13 @@ export class BoardComponent implements Component {
 		this.#filtering = false;
 		if (clear) this.#filter = "";
 		this.#filterInput?.setValue(this.#filter);
-		this.#rebuild(this.#selectedId);
+		this.#rebuild();
 		this.#ui.requestRender();
 	}
 
 	#toggleDoneWindow(): void {
 		this.#showAllDone = !this.#showAllDone;
-		this.#rebuild(this.#selectedId);
+		this.#rebuild();
 		this.#setStatus("muted", this.#showAllDone ? "Done: every archived issue" : "Done: last 7 days");
 	}
 
@@ -468,7 +469,7 @@ export class BoardComponent implements Component {
 
 	/**
 	 * Queue the typed reply. The store moves the issue back to Up next (and
-	 * unarchives it), which is the "back to unsolved" path; the selection follows.
+	 * unarchives it), which is the "back to unsolved" path; the cursor stays put.
 	 */
 	async #submitReply(id: number, text: string): Promise<void> {
 		const reply = text.trim();
@@ -481,7 +482,7 @@ export class BoardComponent implements Component {
 			const { record, reply: queued } = await replyToIssue(this.#root, id, reply);
 			this.#replaceRecord(record);
 			this.#rememberReply(id, queued);
-			this.#rebuild(id);
+			this.#rebuild();
 			this.#status = { text: `#${id} reply queued for the next prompt`, tone: "success" };
 		} catch (error) {
 			this.#status = { text: `#${id}: ${error instanceof Error ? error.message : String(error)}`, tone: "error" };
@@ -606,7 +607,7 @@ export class BoardComponent implements Component {
 		const value = input.getValue();
 		if (value !== this.#filter) {
 			this.#filter = value;
-			this.#rebuild(this.#selectedId);
+			this.#rebuild();
 		}
 		this.#ui.requestRender();
 	}
@@ -710,6 +711,7 @@ export class BoardComponent implements Component {
 	#listLines(width: number): { lines: string[]; selectedLine: number } {
 		const lines: string[] = [];
 		let selectedLine = -1;
+		let row = 0;
 		const now = Date.now();
 		if (this.#groups.length === 0) {
 			lines.push(theme.fg("dim", this.#filter === "" ? " (no issues)" : " (no match)"));
@@ -724,8 +726,9 @@ export class BoardComponent implements Component {
 			const rule = theme.fg(tone, "─".repeat(Math.max(0, width - visibleWidth(label))));
 			lines.push(truncateToWidth(`${label}${rule}`, width, Ellipsis.Omit));
 			for (const record of view.records) {
-				const selected = record.id === this.#selectedId;
+				const selected = row === this.#cursor;
 				if (selected) selectedLine = lines.length;
+				row++;
 				lines.push(this.#rowLine(record, view.group.id, width, selected, now));
 			}
 		}

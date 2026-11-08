@@ -907,9 +907,22 @@ describe("issues store: turn-end queue", () => {
 		expect(ids(await listQueuedIssues(tempDir, "session-a"))).toEqual([record.id]);
 	});
 
+	it("a queued issue the agent moved to running stays queued and keeps its mark", async () => {
+		const record = await upNext("Flaky deploy");
+		await setQueued(tempDir, record.id, true);
+
+		await moveIssue(tempDir, record.id, { stage: "running" });
+
+		expect(ids(await listQueuedIssues(tempDir, "session-a"))).toEqual([record.id]);
+		expect([...(await listQueued(tempDir))]).toEqual([record.id]);
+	});
+
 	// `archiveIssue` keeps the stale `stage: up-next`, so only the archived check drops it.
 	const movedOn: Array<{ name: string; act: (id: number) => Promise<unknown> }> = [
 		{ name: "moved to needs-you", act: id => moveIssue(tempDir, id, { stage: "needs-you" }) },
+		{ name: "moved to awaiting-deploy", act: id => moveIssue(tempDir, id, { stage: "awaiting-deploy" }) },
+		{ name: "moved to deferred", act: id => moveIssue(tempDir, id, { stage: "deferred" }) },
+		{ name: "unstaged", act: id => moveIssue(tempDir, id, { stage: null }) },
 		{ name: "archived", act: id => archiveIssue(tempDir, id, { reason: "done" }) },
 		{ name: "deleted", act: async id => fs.rm((await findIssueById(tempDir, id))!.filePath) },
 	];

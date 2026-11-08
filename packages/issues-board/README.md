@@ -19,9 +19,9 @@ issues underneath it.
 ▌#12   ✓ Done · fixed       critical Keep session tokens out of request logs                auth now
 ```
 
-**Finished** (archived and not yet looked at, newest first) is on top, then
-**Active** (every issue that is not archived, oldest first, so work that has
-waited longest leads), then **Done** (archived and seen, newest first).
+**Finished** (archived and not yet looked at) is on top, then **Active** (every
+issue that is not archived), then **Done** (archived and seen); each group lists
+the most recently updated issue first.
 
 ## Install
 
@@ -50,13 +50,13 @@ with `no .omp/issues found at or above <start>` when there is none.
 
 ## Groups
 
-Three groups, top to bottom, ordered by `updated`:
+Three groups, top to bottom, each ordered by `updated`, newest first:
 
-| Group | What is in it | Order |
-|---|---|---|
-| Finished | archived, and updated after the user last looked at it | newest first |
-| Active | every issue that is not archived, whatever its stage | oldest first |
-| Done | archived, and already seen | newest first |
+| Group | What is in it |
+|---|---|
+| Finished | archived, and updated after the user last looked at it |
+| Active | every issue that is not archived, whatever its stage |
+| Done | archived, and already seen |
 
 An archived issue counts as unseen when its `updated` is later than both the
 inbox watermark (when this machine's inbox was created) and the stamp the user
@@ -126,10 +126,12 @@ In the detail view `↑` `↓` / `j` `k` / page keys scroll, `g` / `G` jump to t
 top and bottom, `esc` goes back and `e` edits the file.
 
 The board reloads itself whenever `.omp/issues` or the issues inbox changes
-(debounced 150 ms) and keeps the selection on the same issue, so an agent filing,
-editing or taking an issue shows up without a restart. A failed write (a file
-archived underneath the board, say) reports in the footer instead of ending the
-session.
+(debounced 150 ms), so an agent filing, editing or taking an issue shows up
+without a restart. The cursor stays on the issue it is on while other rows move;
+when that issue moves itself — a state change, a reply, opening a Finished issue
+— the cursor stays at its row and lands on whatever takes that slot. A failed
+write (a file archived underneath the board, say) reports in the footer instead
+of ending the session.
 
 ## Replies
 

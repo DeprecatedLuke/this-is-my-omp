@@ -22,11 +22,12 @@ import {
 	lines,
 	severityTone,
 	statusTone,
+	type Tone,
 	toolCard,
 	toolHeader,
 } from "@this-is-my-omp/render";
 import type { RepliesDetails } from "./replies";
-import type { IssueSeverity, IssueStatus, IssueSummary } from "./store";
+import type { IssueSeverity, IssueStage, IssueStatus, IssueSummary } from "./store";
 import type { IssueFilters, IssuesToolDetails, IssuesToolParams } from "./tool";
 
 const TOOL_LABEL = "Issues";
@@ -39,7 +40,7 @@ const SEVERITY_RANK: Record<IssueSeverity, number> = { critical: 0, high: 1, med
 function opOf(args: unknown): IssuesToolParams["op"] | undefined {
 	if (!isRecord(args)) return undefined;
 	const op = args.op;
-	return op === "add" || op === "archive" || op === "unarchive" || op === "list" ? op : undefined;
+	return op === "add" || op === "archive" || op === "unarchive" || op === "stage" || op === "list" ? op : undefined;
 }
 
 function severityBadge(theme: Theme, severity: IssueSeverity | undefined): string | undefined {
@@ -50,6 +51,21 @@ function severityBadge(theme: Theme, severity: IssueSeverity | undefined): strin
 function statusBadge(theme: Theme, status: IssueStatus | undefined): string | undefined {
 	if (status === undefined) return undefined;
 	return badge(theme, { text: status, tone: statusTone(status) });
+}
+
+/** Board stages keep the board's own colors: needs-you red, running green, deferred dim. */
+const STAGE_TONE: Record<IssueStage | "none", Tone> = {
+	"needs-you": "error",
+	"up-next": "accent",
+	running: "success",
+	"awaiting-deploy": "warning",
+	deferred: "dim",
+	none: "dim",
+};
+
+function stageBadge(theme: Theme, stage: IssueStage | "none" | undefined): string | undefined {
+	if (stage === undefined) return undefined;
+	return badge(theme, { text: stage, tone: STAGE_TONE[stage] });
 }
 
 /** `open → fixed`: the state the file left, then the state it landed in. */
@@ -103,6 +119,9 @@ export function renderIssuesCall(args: unknown, options: ToolRenderResultOptions
 		title = inline(record.title);
 	} else if ((op === "archive" || op === "unarchive") && typeof record.id === "number") {
 		title = `#${record.id}`;
+	} else if (op === "stage" && typeof record.id === "number") {
+		const next = typeof record.stage === "string" ? record.stage : "?";
+		title = `#${record.id} ${theme.symbol("key.right")} ${next}`;
 	} else if (op === "list") {
 		title = filterMeta({
 			category: typeof record.category === "string" ? record.category : undefined,
@@ -168,6 +187,27 @@ function moveCard(theme: Theme, details: IssuesToolDetails, expanded: boolean): 
 	});
 }
 
+/** `stage` result: the board column the issue left, then the one it landed in. */
+function stageCard(theme: Theme, details: IssuesToolDetails, expanded: boolean): Component {
+	const next = details.stage;
+	const body: string[] = [];
+	if (details.previousStage !== undefined) {
+		const arrow = theme.fg("dim", theme.symbol("key.right"));
+		body.push(`${stageBadge(theme, details.previousStage)} ${arrow} ${stageBadge(theme, next ?? "none")}`);
+	}
+	if (expanded && details.category) body.push(...keyValueRows(theme, [["category", details.category]]));
+	return toolCard(theme, {
+		header: {
+			tool: TOOL_LABEL,
+			icon: details.unchanged === true ? "warning" : "success",
+			title: `#${details.id ?? "?"} ${inline(details.title ?? "(untitled)")}`,
+			badges: next === undefined ? [{ text: "no stage", tone: "dim" }] : [{ text: next, tone: STAGE_TONE[next] }],
+		},
+		body,
+		footer: details.url ?? (details.filename ? `issues://${details.filename}` : undefined),
+	});
+}
+
 /** `list` result: severity-sorted rows, collapsed with a counted footer. */
 function listView(theme: Theme, details: IssuesToolDetails, expanded: boolean): Component {
 	const summaries = sortForDisplay(details.listing ?? []);
@@ -207,6 +247,8 @@ export function renderIssuesResult(
 		case "archive":
 		case "unarchive":
 			return moveCard(theme, details, options.expanded);
+		case "stage":
+			return stageCard(theme, details, options.expanded);
 		default:
 			return addCard(theme, details, options.expanded);
 	}

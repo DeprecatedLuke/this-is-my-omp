@@ -190,15 +190,10 @@ export function updatedMs(record: IssueRecord): number {
 	return Number.isFinite(parsed) ? parsed : 0;
 }
 
-/** Most recently updated first, then id: the order of Finished and Done. */
+/** Most recently updated first, then id: the order of every group. */
 export function compareNewest(a: IssueRecord, b: IssueRecord): number {
 	const byUpdated = updatedMs(b) - updatedMs(a);
 	return byUpdated !== 0 ? byUpdated : b.id - a.id;
-}
-
-/** Least recently updated first, then id: open work that has waited longest leads. */
-export function compareOldest(a: IssueRecord, b: IssueRecord): number {
-	return -compareNewest(a, b);
 }
 
 /** Case-insensitive substring match over title, category and body. */
@@ -265,9 +260,9 @@ export interface BuildListOptions {
 }
 
 /**
- * Group records into Finished (archived and not yet seen, newest first), Active
- * (every non-archived issue, oldest first) and Done (archived and seen, newest
- * first). Empty groups are dropped, so the list never shows a header with
+ * Group records into Finished (archived and not yet seen), Active (every
+ * non-archived issue) and Done (archived and seen), each newest `updated`
+ * first. Empty groups are dropped, so the list never shows a header with
  * nothing under it.
  */
 export function buildList(records: readonly IssueRecord[], options: BuildListOptions = {}): ListGroupView[] {
@@ -284,7 +279,7 @@ export function buildList(records: readonly IssueRecord[], options: BuildListOpt
 	}
 	return LIST_GROUPS.map(group => ({
 		group,
-		records: (rows.get(group.id) ?? []).sort(group.id === "active" ? compareOldest : compareNewest),
+		records: (rows.get(group.id) ?? []).sort(compareNewest),
 	})).filter(view => view.records.length > 0);
 }
 

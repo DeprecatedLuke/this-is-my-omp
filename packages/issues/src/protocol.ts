@@ -15,8 +15,8 @@
  * the frontmatter drives the lifecycle: a terminal `status` archives the file, a
  * `category` change moves it, a `title` change re-derives the slug. The write is
  * validated (intact `---` fences, parseable YAML, in-enum status/severity/stage) and
- * rejected on failure. The `issues` tool keeps only id-allocating/shortcut ops
- * (`add`, `archive`, `unarchive`, `list`); raw writes to listing URLs
+ * rejected on failure. The `issues` tool keeps only id-allocating and shortcut ops
+ * (`add`, `archive`, `unarchive`, `stage`, `list`); raw writes to listing URLs
  * (`issues://`, `issues://archive`) are rejected.
  */
 

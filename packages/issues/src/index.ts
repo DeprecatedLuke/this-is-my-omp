@@ -30,6 +30,7 @@ import {
 	type IssueSummary,
 	listIssues,
 	listQueuedIssues,
+	moveIssue,
 } from "./store";
 import { type IssuesToolDetails, type IssuesToolParams, issuesTool } from "./tool";
 
@@ -104,6 +105,27 @@ async function recordDelivered(pi: ExtensionAPI, root: string, delivered: readon
 }
 
 /**
+ * Mark a handed-off issue `running`: the board shows Running the moment an agent
+ * takes the work, without the agent spending a read plus a write on it. Only an
+ * active issue that is not already `running` is written — a later turn end sees
+ * `running` and writes nothing, so a hand-off cannot keep bumping `updated` and
+ * the stall guard still bounds the queue loop. Best effort: a failed write is
+ * logged and never blocks the prompt.
+ */
+async function markRunning(pi: ExtensionAPI, root: string, id: number): Promise<void> {
+	try {
+		const record = await findIssueById(root, id);
+		if (!record || record.archived || record.frontmatter.stage === "running") return;
+		await moveIssue(root, id, { stage: "running" });
+	} catch (error) {
+		pi.logger.debug("issues: failed to mark a handed-off issue running", {
+			id,
+			error: error instanceof Error ? error.message : String(error),
+		});
+	}
+}
+
+/**
  * Turn the replies the user typed on `omp-board` into a reminder on this prompt,
  * then record them in their issues. Nothing wakes an idle session, so the next
  * prompt of a main session in this checkout is the delivery point; the issue is
@@ -147,6 +169,7 @@ async function deliverReplies(
 		}
 		// The issue vanished under the reply: leave the text pending rather than drop it.
 		if (!record) continue;
+		await markRunning(pi, root, id);
 		const taken = await takeReplies(pi, root, replies, sessionId);
 		if (taken.length > 0) delivered.push({ record, replies: taken });
 	}
@@ -214,6 +237,7 @@ async function takeQueueReminder(
 			});
 			continue;
 		}
+		await markRunning(pi, root, record.id);
 		delivered.push({ record, replies: await takeReplies(pi, root, byIssue.get(record.id) ?? [], sessionId) });
 	}
 	if (delivered.length === 0) return undefined;

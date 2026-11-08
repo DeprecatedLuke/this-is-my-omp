@@ -34,12 +34,12 @@ export type IssueSeverity = "low" | "medium" | "high" | "critical";
  *  of truth; `status` is metadata that the agent and renderers can read. */
 export type IssueStatus = "open" | "in-progress" | "fixed" | "wontfix" | "duplicate";
 
+/** Every stage, in board state order. */
+export const ISSUE_STAGES = ["needs-you", "up-next", "running", "awaiting-deploy", "deferred"] as const;
+
 /** Board stage: where an active issue sits beyond its status. Optional; an
  *  issue without one is plain open work. Archived issues never carry one. */
-export type IssueStage = "needs-you" | "up-next" | "running" | "awaiting-deploy" | "deferred";
-
-/** Every stage, in board state order. */
-export const ISSUE_STAGES: readonly IssueStage[] = ["needs-you", "up-next", "running", "awaiting-deploy", "deferred"];
+export type IssueStage = (typeof ISSUE_STAGES)[number];
 
 export interface IssueFrontmatter {
 	title: string;
@@ -994,8 +994,10 @@ export async function appendReplyHistory(
  *
  * A committed `stage: up-next` alone is not a queue entry: only a local queue
  * mark counts, so a cloned repo's stage cannot drive this machine's agents. A
- * mark whose issue is gone, archived, or no longer `up-next` (the agent moved it
- * on) is pruned here.
+ * mark survives while its issue is active and `up-next` or `running` (the work
+ * is in flight, so the claiming session keeps looping). It is pruned once the
+ * issue is gone, archived, or the agent moved it on: to `needs-you`,
+ * `awaiting-deploy`, `deferred`, or no stage at all.
  */
 export async function listQueuedIssues(root: string, sessionId: string): Promise<IssueRecord[]> {
 	const records = await listIssueRecords(root);
@@ -1003,7 +1005,8 @@ export async function listQueuedIssues(root: string, sessionId: string): Promise
 	const queued = await listQueued(root);
 	for (const id of queued) {
 		const record = byId.get(id);
-		if (record && !record.archived && record.frontmatter.stage === "up-next") continue;
+		const stage = record?.frontmatter.stage;
+		if (record && !record.archived && (stage === "up-next" || stage === "running")) continue;
 		await setQueued(root, id, false);
 		queued.delete(id);
 	}

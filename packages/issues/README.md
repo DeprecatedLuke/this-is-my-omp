@@ -41,6 +41,7 @@ Registered as a discoverable extension tool, so the host mounts it as the
 | `add` | `category`, `title`, `body` | `severity`, `status`, `report`, `location[]`, `extra` | Allocates the next global id, writes `.omp/issues/<category>/<id>-<slug>.md`. |
 | `archive` | `id` | `reason`, `status` (default `fixed`) | Moves the file to `.omp/issues/.archive/<category>/`. |
 | `unarchive` | `id` | `status` (default `open`) | Restores the file to its category. |
+| `stage` | `id`, `stage` | — | Sets the issue's board column (`needs-you`, `up-next`, `running`, `awaiting-deploy`, `deferred`) or clears it with `none`; no read and no rewrite. |
 | `list` | — | `category`, `archived`, `severity`, `status`, `query`, `limit` | Markdown listing; `details.listing` feeds the TUI. |
 
 Ids are global across categories and stable across archive cycles. Bodies and
@@ -53,9 +54,10 @@ of corrupting the metadata layer.
 ### `stage`
 
 An optional `stage` key gives an active issue its state on the `omp-board`
-list. Set it by rewriting the issue through
-`issues://<id>.md` (or via `add`'s `extra`); a value outside the set is rejected
-like an out-of-enum `status`/`severity`.
+list. Set it with the `stage` op — `{"op":"stage","id":12,"stage":"running"}`,
+`{"op":"stage","id":12,"stage":"none"}` to clear it — or by rewriting the issue
+through `issues://<id>.md` (or via `add`'s `extra`); a value outside the set is
+rejected like an out-of-enum `status`/`severity`.
 
 | Stage | Meaning |
 | --- | --- |
@@ -68,6 +70,12 @@ like an out-of-enum `status`/`severity`.
 Omit it for plain open work. Moving an issue to Done clears the key, and an
 archived issue never shows a stage.
 
+The plugin sets `running` itself when it hands an issue to a session — a queued
+issue at turn end, a reply at prompt time — so the board shows Running the moment
+an agent takes the work, and the agent only has to hand it back (`needs-you`) or
+archive it. A hand-off writes only when the issue is active and not already
+`running`, so a later turn end leaves the file untouched.
+
 ### `report`
 
 An optional `report` key attaches the write-up an issue came from: either a
@@ -78,10 +86,11 @@ lifecycle path — board moves, archive, unarchive, metadata edits — preserves
 
 While `enabled`, the main agent gets a static `§ Issue Board` system-prompt
 section (`src/prompts/board.md`): file an issue for work that outlives the turn,
-needs the user or waits on a deploy, keep its `stage` current, use `running`
-rather than `in-progress` for unfinished work, and cite issues as
-`issues://<id>`. The in-progress reminder points the same way: an issue not
-finished this turn goes back to `open` with `stage: running` or `needs-you`.
+needs the user or waits on a deploy, set `stage: running` with the `stage` op
+before starting anything, use `running` rather than `in-progress` for unfinished
+work, and cite issues as `issues://<id>`. The in-progress reminder points the
+same way: an issue not finished this turn goes back to `open` with `stage:
+running` or `needs-you`.
 
 ### Replies
 
@@ -122,9 +131,13 @@ archived when done, and `needs-you` when it needs the user back — that is the
 loop-breaker.
 
 A committed `stage: up-next` alone does not queue anything: only the local queue
-mark counts, so a cloned repo's stage cannot drive the user's agents. A mark whose
-issue is gone, archived, or no longer `up-next` (the agent moved it on) is pruned
-when the queue is read.
+mark counts, so a cloned repo's stage cannot drive the user's agents. A mark
+survives while its issue is active and either `up-next` or `running` — the
+hand-off marks it `running`, so the work stays in flight — and is pruned once the
+agent moves it to `needs-you`, `awaiting-deploy`, `deferred`, or no stage at all,
+archives it, or the issue is gone. The hand-off write bumps `updated` once; after
+that the stage is already `running`, so later turn ends write nothing and the
+stall guard still bounds the loop.
 
 Every queued issue is claimed for the session (`claims/<id>`), so parallel sessions
 in one checkout never take the same issue; a board move frees the claim, and
@@ -150,7 +163,8 @@ in the system prompt's internal-URL list.
 `renderCall` and `renderResult` are driven entirely by `details` from the shared
 `@this-is-my-omp/render` kit: op badge and subject on the call row, a framed
 card with id, severity/status badges, category, location, and the `issues://` URL
-for `add`, `open → fixed` transitions for `archive`/`unarchive`, and a
+for `add`, `open → fixed` transitions for `archive`/`unarchive`, stage transitions
+in the board's colors for `stage`, and a
 severity-sorted list (collapsed with `… N more issues`) for `list`. Subagent
 `issues add` calls stream into the parent task card through the subprocess tool
 registry, so a review's filed issues are visible without extra plumbing.
