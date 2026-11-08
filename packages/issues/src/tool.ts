@@ -14,6 +14,7 @@ import * as z from "@oh-my-pi/omptype/zod";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { ExtensionContext, ToolDefinition } from "@oh-my-pi/pi-coding-agent";
 import { prompt, untilAborted } from "@oh-my-pi/pi-utils";
+import { boardOwner, claim, claimIsStale, claimOwner, touchPresence } from "./inbox";
 import issuesDescription from "./prompts/tool.md" with { type: "text" };
 import { renderIssuesCall, renderIssuesResult } from "./render";
 import { readIssuesSettings } from "./settings";
@@ -79,7 +80,11 @@ const listParams = z.object({
 	limit: z.number().int().positive().optional(),
 });
 
-const issuesSchema = z.union([addParams, archiveParams, unarchiveParams, stageParams, listParams]);
+const joinParams = z.object({
+	op: z.literal("join"),
+});
+
+const issuesSchema = z.union([addParams, archiveParams, unarchiveParams, stageParams, listParams, joinParams]);
 export type IssuesToolParams = z.infer<typeof issuesSchema>;
 
 /** Filters a `list` call ran with, echoed in `details` so renderers never parse text. */
@@ -123,6 +128,10 @@ export interface IssuesToolDetails {
 	confidence?: number;
 	/** Failure message when the op reported an error instead of throwing. */
 	error?: string;
+	/** `join` put this session on the board alongside its owner. */
+	parallel?: boolean;
+	/** Session that owns the board, as `join` found it. */
+	owner?: string;
 }
 
 function urlForRecord(record: IssueRecord): string {
@@ -239,6 +248,7 @@ async function executeUnarchive(
 async function executeStage(
 	cwd: string,
 	params: Extract<IssuesToolParams, { op: "stage" }>,
+	sessionId: string | undefined,
 ): Promise<AgentToolResult<IssuesToolDetails>> {
 	const before = await findIssueById(cwd, params.id);
 	// Archived issues carry no stage; say so instead of reporting a stage that was not kept.
@@ -249,9 +259,43 @@ async function executeStage(
 		previousStage: before?.frontmatter.stage,
 		unchanged: before?.frontmatter.stage === record.frontmatter.stage,
 	};
-	const text =
+	let text =
 		params.stage === "none" ? `#${record.id} stage cleared` : `#${record.id} stage → ${record.frontmatter.stage}`;
+	// Setting an issue running is starting it, so the session takes the claim —
+	// unless a live session already works it. The claim is bookkeeping: a failed
+	// write must not turn a stage the file already carries into an error.
+	if (params.stage === "running" && sessionId !== undefined) {
+		try {
+			const holder = await claimOwner(cwd, record.id);
+			if (holder !== undefined && holder !== sessionId && !(await claimIsStale(cwd, record.id))) {
+				text += `\n#${record.id} is held by another live session (${holder.slice(0, 6)}); two sessions on one issue will conflict, so tell the user.`;
+			} else {
+				await claim(cwd, record.id, sessionId);
+			}
+		} catch {
+			// The stage is what the board shows; a claim that could not be written is not worth failing the op.
+		}
+	}
 	return textResult(text, details);
+}
+
+/**
+ * Put this session on the board alongside its owner: it is handed queued issues
+ * and replies too, which is what the user asked for. Needs the main session —
+ * a subagent has no board of its own.
+ */
+async function executeJoin(cwd: string, sessionId: string | undefined): Promise<AgentToolResult<IssuesToolDetails>> {
+	if (sessionId === undefined) {
+		throw new Error("`join` needs the main session's id; a subagent cannot take board work.");
+	}
+	await touchPresence(cwd, sessionId, { parallel: true });
+	const owner = await boardOwner(cwd);
+	const other = owner !== undefined && owner !== sessionId ? owner : undefined;
+	const text =
+		other === undefined
+			? "This session now takes board work in parallel (no other owner)"
+			: `This session now takes board work in parallel with ${other.slice(0, 6)}`;
+	return textResult(text, { op: "join", parallel: true, owner });
 }
 
 async function executeList(
@@ -292,13 +336,20 @@ async function executeList(
 	return textResult(text, { op: "list", listing: summaries, filters });
 }
 
+/** Options a caller supplies: the abort signal, and the main session id when there is one. */
+export interface RunIssuesOptions {
+	signal?: AbortSignal;
+	/** Main session id; absent in a subagent, which cannot take board work. */
+	sessionId?: string;
+}
+
 /** Run one `issues` op. Split out of {@link issuesTool} so tests drive it without the host. */
 export async function runIssuesOp(
 	cwd: string,
 	params: IssuesToolParams,
-	signal?: AbortSignal,
+	options: RunIssuesOptions = {},
 ): Promise<AgentToolResult<IssuesToolDetails>> {
-	return untilAborted(signal, async () => {
+	return untilAborted(options.signal, async () => {
 		try {
 			switch (params.op) {
 				case "add":
@@ -308,9 +359,11 @@ export async function runIssuesOp(
 				case "unarchive":
 					return await executeUnarchive(cwd, params);
 				case "stage":
-					return await executeStage(cwd, params);
+					return await executeStage(cwd, params, options.sessionId);
 				case "list":
 					return await executeList(cwd, params);
+				case "join":
+					return await executeJoin(cwd, options.sessionId);
 			}
 		} catch (error) {
 			return errorResult(params.op, error);
@@ -337,7 +390,10 @@ export const issuesTool: ToolDefinition<typeof issuesSchema, IssuesToolDetails> 
 		if (!settings.enabled) {
 			throw new Error("The issues tool is disabled by the `omp-issues` plugin setting `enabled`.");
 		}
-		return runIssuesOp(ctx.cwd, input, signal);
+		return runIssuesOp(ctx.cwd, input, {
+			signal,
+			sessionId: ctx.agent.kind === "main" ? ctx.sessionManager.getSessionId() : undefined,
+		});
 	},
 	renderCall: renderIssuesCall,
 	renderResult: renderIssuesResult,

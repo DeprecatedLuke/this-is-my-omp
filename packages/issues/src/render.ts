@@ -40,7 +40,9 @@ const SEVERITY_RANK: Record<IssueSeverity, number> = { critical: 0, high: 1, med
 function opOf(args: unknown): IssuesToolParams["op"] | undefined {
 	if (!isRecord(args)) return undefined;
 	const op = args.op;
-	return op === "add" || op === "archive" || op === "unarchive" || op === "stage" || op === "list" ? op : undefined;
+	return op === "add" || op === "archive" || op === "unarchive" || op === "stage" || op === "list" || op === "join"
+		? op
+		: undefined;
 }
 
 function severityBadge(theme: Theme, severity: IssueSeverity | undefined): string | undefined {
@@ -208,6 +210,24 @@ function stageCard(theme: Theme, details: IssuesToolDetails, expanded: boolean):
 	});
 }
 
+/** `join` result: this session now shares the board with its owner. */
+function joinCard(theme: Theme, details: IssuesToolDetails): Component {
+	const owner = details.owner;
+	const body =
+		owner === undefined
+			? [theme.fg("dim", "no other owner")]
+			: keyValueRows(theme, [["owner", theme.fg("accent", owner)]]);
+	return toolCard(theme, {
+		header: {
+			tool: TOOL_LABEL,
+			icon: "success",
+			title: "board work in parallel",
+			badges: [{ text: "join", tone: "accent" }],
+		},
+		body,
+	});
+}
+
 /** `list` result: severity-sorted rows, collapsed with a counted footer. */
 function listView(theme: Theme, details: IssuesToolDetails, expanded: boolean): Component {
 	const summaries = sortForDisplay(details.listing ?? []);
@@ -244,6 +264,8 @@ export function renderIssuesResult(
 	switch (details.op) {
 		case "list":
 			return listView(theme, details, options.expanded);
+		case "join":
+			return joinCard(theme, details);
 		case "archive":
 		case "unarchive":
 			return moveCard(theme, details, options.expanded);

@@ -5,8 +5,9 @@ The `issues` tool creates and lifecycles issues and sets their board stage; **ed
 - `add` — Create a new issue. Required: `category`, `title`, `body`. Optional: `severity` (`low|medium|high|critical`), `status` (`open|in-progress|fixed|wontfix|duplicate`; default `open`), `report` (`report://<project>/<slug>` or an `https://` URL), `location[]` (paths or `path:line` refs), `extra` (free-form frontmatter merged into the file).
 - `archive` — Move an active issue to `.omp/issues/.archive/<category>/`. Required: `id`. Optional: `reason` (recorded in frontmatter), `status` (default `fixed`). A shortcut for setting a terminal status that also records a `reason`.
 - `unarchive` — Move an archived issue back to active. Required: `id`. Optional: `status` (default `open`). A shortcut for reopening (setting a non-terminal status).
-- `stage` — Set the issue's `omp-board` column, without reading or rewriting the file. Required: `id`, `stage` (`needs-you|up-next|running|awaiting-deploy|deferred|none`; `none` clears it). Use it when you start work (`running`), hand the issue back (`needs-you`), or park it (`deferred`).
+- `stage` — Set the issue's `omp-board` column, without reading or rewriting the file. Required: `id`, `stage` (`needs-you|up-next|running|awaiting-deploy|deferred|none`; `none` clears it). Use it when you start work (`running`), hand the issue back (`needs-you`), or park it (`deferred`). `running` also claims the issue for this session (so no other session takes it); when another live session already holds it the stage is still set and the result says so — two sessions on one issue conflict, so tell the user.
 - `list` — Return a summary listing. All params optional: `category`, `archived` (`true`/`false`; default both), `severity`, `status`, `query` (substring search across title/body/frontmatter), `limit`.
+- `join` — Take board work in parallel with the session that owns the board: this session is then handed queued issues and replies too. No params. Only when the user explicitly asks this session to work in parallel; a subagent has no board of its own and is refused.
 
 **To edit an existing issue, rewrite the whole `issues://<id>.md` file with the `write` tool** — read it first, change what you need, then write the full file back to the `issues://<id>.md` URL (e.g. `issues://14.md`). Always target the id-only `issues://` URL, **not** the on-disk path the read header shows — only the URL write is validated and lifecycle-aware. The frontmatter *is* the metadata layer: changing `title` re-derives the slug, changing `category` moves the file, and setting `status` to `fixed`/`wontfix`/`duplicate` archives it (back to `open`/`in-progress` restores it). The write is rejected if the frontmatter is malformed — a dropped `---` fence, unparseable YAML, or an out-of-enum `status`/`severity`/`stage`. Read with `issues://<id>.md`; browse with `issues://` (active) and `issues://archive` (archived).
 </instruction>
@@ -15,6 +16,7 @@ The `issues` tool creates and lifecycles issues and sets their board stage; **ed
 - `add` returns the new issue's id, category, filename, and full `issues://` URL.
 - `archive`/`unarchive` return the new location.
 - `stage` returns the issue's new `omp-board` column (`#12 stage → running`, or `#12 stage cleared`).
+- `join` returns `This session now takes board work in parallel with <owner id>`, or `… (no other owner)` when no session owns the board yet.
 - Writing `issues://<id>.md` with the `write` tool reports any lifecycle effect (moved/renamed/archived) plus the resulting URL.
 - `list` returns a markdown summary identical to the `issues://` listing.
 </output>

@@ -11,5 +11,6 @@ The user follows this project's work on `omp-board`, a list over `.omp/issues/`.
 - Clear the stage (`"stage":"none"`) when the issue is plain open work again; archive it (`fixed`/`wontfix`/`duplicate`) when done, with a short `## Result` note in the body: the user reviews finished issues on the board, and replying reopens them.
 - Replies the user types on the board arrive as a reminder with your next prompt, and an issue the user queued on this machine is handed to you at turn end: work it now instead of stopping. `needs-you` is how you hand it back and end that loop — say what you need.
 - Queue marks and claims are machine-local, not part of the issue file: only issues the user queued here drive the turn-end loop, and a board move frees the claim. Never write them yourself.
+- One session per checkout owns the board, and only it is handed queued issues and replies. Never pick up queued or `up-next` issues the board did not hand you. Work on issues in parallel only when the user explicitly asks this session to; then call `{"op":"join"}`. An issue the user asks you to fix directly is fine: setting it `running` claims it for you.
 - When you publish a report about an issue, attach it: set `report: report://<project>/<slug>` on the issue.
 - Refer to issues as `issues://<id>` in replies; the user can open them on the board from there.

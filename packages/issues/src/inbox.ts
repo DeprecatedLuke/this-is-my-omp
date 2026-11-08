@@ -10,16 +10,24 @@
  *   ~/.omp/agent/issues-inbox/<slug>-<hash>/
  *     replies/<id>/<epochMs>-<rand>.txt   one pending reply per file
  *     queued/<id>                         empty: the user queued this issue
- *     claims/<id>                         the owning omp session id
+ *     claims/<id>                         the omp session id working this issue
+ *     owner                               the omp session id that owns the board
+ *     sessions/<sessionId>                presence `{"parallel":bool}`; its mtime is the heartbeat
  *     seen/<id>                           `updated` of the issue when last viewed
  *     seen/.watermark                     ISO time the inbox was first used
  *
  * Every take is atomic so parallel sessions never share work: a reply is taken
  * by renaming it to a dot-name (only one rename of a path can succeed), and a
- * claim is a hard link of a fully written temp file onto `claims/<id>` (only
- * one link can create the name, and readers never see a half-written owner).
- * Dot-files are in-flight temp or taken entries and are never listed. Missing
- * directories read as empty; writers create them.
+ * claim or the owner lease is a hard link of a fully written temp file onto its
+ * name (only one link can create the name, and readers never see a half-written
+ * holder).
+ *
+ * A session is live while its presence file was touched within
+ * {@link PRESENCE_STALE_MS}. A claim or lease naming a session that is not live
+ * is stale: the next taker moves it aside (one rename wins), checks it still
+ * names the dead session, and links its own. Dot-files are in-flight temp,
+ * taken or moved-aside entries and are never listed. Missing directories read
+ * as empty; writers create them.
  */
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
@@ -128,6 +136,97 @@ async function linkIntoPlace(file: string, content: string): Promise<boolean> {
 	}
 }
 
+/**
+ * Replace `file` with `content` atomically: a temp file in the same dir, then a
+ * rename over the name. Last writer wins; a reader sees the old content or the
+ * new one, never a partial write.
+ */
+async function replaceFile(file: string, content: string): Promise<void> {
+	await fsp.mkdir(path.dirname(file), { recursive: true });
+	const tmp = path.join(path.dirname(file), `.${path.basename(file)}.${crypto.randomBytes(4).toString("hex")}.tmp`);
+	await fsp.writeFile(tmp, content, { encoding: "utf8", flag: "wx" });
+	await fsp.rename(tmp, file);
+}
+
+/**
+ * Delete `file` only while it still names `holder`. The file is renamed to a
+ * dot-name first (only one rename of a path can succeed), then checked: one
+ * another session wrote since `holder` was read is linked back instead of
+ * dropped. True when this call removed `holder`'s file.
+ */
+async function removeIfHeldBy(file: string, holder: string, actor: string): Promise<boolean> {
+	const aside = path.join(
+		path.dirname(file),
+		`.${path.basename(file)}.${fileSafe(actor)}.${crypto.randomBytes(4).toString("hex")}.aside`,
+	);
+	try {
+		await fsp.rename(file, aside);
+	} catch (error) {
+		if (isEnoent(error)) return false;
+		throw error;
+	}
+	try {
+		if ((await fsp.readFile(aside, "utf8")).trim() === holder) return true;
+		try {
+			await fsp.link(aside, file);
+		} catch (error) {
+			// A third session took the name meanwhile; its hold stands.
+			if (errorCode(error) !== "EEXIST") throw error;
+		}
+		return false;
+	} finally {
+		await fsp.rm(aside, { force: true });
+	}
+}
+
+/** mtime of `file` in epoch ms, or undefined when it does not exist. */
+async function mtimeOf(file: string): Promise<number | undefined> {
+	try {
+		return (await fsp.stat(file)).mtimeMs;
+	} catch (error) {
+		if (isEnoent(error)) return undefined;
+		throw error;
+	}
+}
+
+/**
+ * Whether the hold in `file` (a claim or the owner lease) can be taken over.
+ *
+ * A holder with a fresh heartbeat is live: the hold stands. A holder that
+ * registered a heartbeat and let it go stale is gone: the hold is taken over at
+ * once. A holder with no heartbeat at all is unknown, so the hold stands while
+ * it is younger than the stale window — that keeps a session which writes its
+ * presence and its claim in that order from losing the claim in between, and
+ * keeps a hold exclusive while its holder is merely unregistered.
+ */
+async function holdIsStale(root: string, file: string, holder: string, now: number): Promise<boolean> {
+	const beat = await mtimeOf(presenceFile(root, holder));
+	if (beat !== undefined) return now - beat >= PRESENCE_STALE_MS;
+	const heldAt = await mtimeOf(file);
+	return heldAt === undefined || now - heldAt >= PRESENCE_STALE_MS;
+}
+
+/**
+ * Hold `file` (a claim or the owner lease, holding a session id) for
+ * `sessionId`. The create is exclusive ({@link linkIntoPlace}); a stale hold is
+ * moved aside and the create retried. True when `sessionId` holds it (new,
+ * already held, or taken over); false while another session does.
+ */
+async function hold(root: string, file: string, sessionId: string): Promise<boolean> {
+	await fsp.mkdir(path.dirname(file), { recursive: true });
+	for (let attempt = 0; attempt < 5; attempt++) {
+		const now = Date.now();
+		if (await linkIntoPlace(file, sessionId)) return true;
+		const holder = (await readText(file))?.trim();
+		// Released between the failed link and the read: free again.
+		if (holder === undefined) continue;
+		if (holder === sessionId) return true;
+		if (!(await holdIsStale(root, file, holder, now))) return false;
+		await removeIfHeldBy(file, holder, sessionId);
+	}
+	return false;
+}
+
 /** Queue one reply for issue `id`: written to a temp file in the same dir, then renamed into place. */
 export async function addReply(root: string, id: number, text: string): Promise<PendingReply> {
 	const trimmed = text.trim();
@@ -220,28 +319,21 @@ export async function listQueued(root: string): Promise<Set<number>> {
 	return ids;
 }
 
-/** The session that holds issue `id`, if any. */
+/** The session that holds issue `id`, if any, live or not. */
 export async function claimOwner(root: string, id: number): Promise<string | undefined> {
 	const owner = (await readText(path.join(inboxDir(root), "claims", String(id))))?.trim();
 	return owner ? owner : undefined;
 }
 
 /**
- * Claim issue `id` for `sessionId`. The owner is written to a temp file first
+ * Claim issue `id` for `sessionId`. The holder is written to a temp file first
  * and hard-linked onto `claims/<id>`, which fails when the name exists, so the
- * create is exclusive and a reader never sees an empty owner. True when this
- * session owns the claim (new, or already held); false when another session does.
+ * create is exclusive and a reader never sees an empty holder. A claim whose
+ * holder is no longer live is taken over. True when this session holds the
+ * claim (new, already held, or taken over); false when another live session does.
  */
 export async function claim(root: string, id: number, sessionId: string): Promise<boolean> {
-	const file = path.join(inboxDir(root), "claims", String(id));
-	await fsp.mkdir(path.dirname(file), { recursive: true });
-	// A claim released between a failed link and the owner read is free again: retry.
-	for (let attempt = 0; attempt < 5; attempt++) {
-		if (await linkIntoPlace(file, sessionId)) return true;
-		const owner = await claimOwner(root, id);
-		if (owner !== undefined) return owner === sessionId;
-	}
-	return false;
+	return hold(root, path.join(inboxDir(root), "claims", String(id)), sessionId);
 }
 
 /** Free the claim on issue `id`, whoever holds it. */
@@ -257,41 +349,115 @@ export async function releaseSessionClaims(root: string, sessionId: string): Pro
 		if (!ID_RE.test(name)) continue;
 		const file = path.join(dir, name);
 		if ((await readText(file))?.trim() !== sessionId) continue;
-		// Move it aside before deleting, so a claim another session took between the
-		// read and the delete is put back instead of silently dropped.
-		const aside = path.join(dir, `.${name}.${fileSafe(sessionId)}.${crypto.randomBytes(4).toString("hex")}.release`);
-		try {
-			await fsp.rename(file, aside);
-		} catch (error) {
-			if (isEnoent(error)) continue;
-			throw error;
-		}
-		try {
-			if ((await fsp.readFile(aside, "utf8")).trim() === sessionId) {
-				released += 1;
-				continue;
-			}
-			try {
-				await fsp.link(aside, file);
-			} catch (error) {
-				// A third session claimed it meanwhile; its claim stands.
-				if (errorCode(error) !== "EEXIST") throw error;
-			}
-		} finally {
-			await fsp.rm(aside, { force: true });
-		}
+		if (await removeIfHeldBy(file, sessionId, sessionId)) released += 1;
 	}
 	return released;
 }
 
+/** A session whose presence went this long without a refresh is gone: crashed, killed or suspended. */
+export const PRESENCE_STALE_MS = 120_000;
+
+/** What a session's presence file holds; the file's mtime is the heartbeat. */
+export interface Presence {
+	/** The user asked this session to take board work alongside the owner (`issues` op `join`). */
+	parallel: boolean;
+}
+
+function presenceFile(root: string, sessionId: string): string {
+	return path.join(inboxDir(root), "sessions", fileSafe(sessionId));
+}
+
+/**
+ * Bump the heartbeat of `sessionId`'s existing presence. False when it has none:
+ * nothing is created, so a stray refresh never registers a session.
+ */
+export async function refreshPresence(root: string, sessionId: string): Promise<boolean> {
+	const now = new Date();
+	try {
+		await fsp.utimes(presenceFile(root, sessionId), now, now);
+		return true;
+	} catch (error) {
+		if (isEnoent(error)) return false;
+		throw error;
+	}
+}
+
+/**
+ * Register `sessionId` as present in the checkout, or refresh its heartbeat. The
+ * stored `parallel` flag is kept unless `opts.parallel` sets it.
+ */
+export async function touchPresence(root: string, sessionId: string, opts: { parallel?: boolean } = {}): Promise<void> {
+	if (opts.parallel === undefined && (await refreshPresence(root, sessionId))) return;
+	const presence: Presence = { parallel: opts.parallel ?? false };
+	await replaceFile(presenceFile(root, sessionId), JSON.stringify(presence));
+}
+
+/** Drop `sessionId`'s presence: it reads as gone at once. */
+export async function removePresence(root: string, sessionId: string): Promise<void> {
+	await fsp.rm(presenceFile(root, sessionId), { force: true });
+}
+
+/** Whether `sessionId` refreshed its presence within {@link PRESENCE_STALE_MS} of `now`. */
+export async function isLive(root: string, sessionId: string, now: number = Date.now()): Promise<boolean> {
+	const beat = await mtimeOf(presenceFile(root, sessionId));
+	return beat !== undefined && now - beat < PRESENCE_STALE_MS;
+}
+
+/**
+ * Whether the claim on `id` is free to take: unclaimed, or held by a session that
+ * is gone (see {@link holdIsStale}).
+ */
+export async function claimIsStale(root: string, id: number, now: number = Date.now()): Promise<boolean> {
+	const file = path.join(inboxDir(root), "claims", String(id));
+	const holder = (await readText(file))?.trim();
+	if (holder === undefined || holder.length === 0) return true;
+	return holdIsStale(root, file, holder, now);
+}
+
+/** Whether `sessionId` joined the board in parallel (`issues` op `join`). */
+export async function isParallel(root: string, sessionId: string): Promise<boolean> {
+	const text = await readText(presenceFile(root, sessionId));
+	if (text === undefined) return false;
+	try {
+		return (JSON.parse(text) as Partial<Presence> | null)?.parallel === true;
+	} catch {
+		return false;
+	}
+}
+
+function ownerFile(root: string): string {
+	return path.join(inboxDir(root), "owner");
+}
+
+/**
+ * Take the board lease for `sessionId`: only the owner is handed unclaimed board
+ * work. True when it holds the lease (new, already held, or taken over from a
+ * session that is no longer live); false while another live session holds it.
+ * The caller keeps its own presence fresh, or its lease reads as stale.
+ */
+export async function acquireOwner(root: string, sessionId: string): Promise<boolean> {
+	return hold(root, ownerFile(root), sessionId);
+}
+
+/** Drop the board lease if `sessionId` holds it. */
+export async function releaseOwner(root: string, sessionId: string): Promise<void> {
+	const file = ownerFile(root);
+	if ((await readText(file))?.trim() !== sessionId) return;
+	await removeIfHeldBy(file, sessionId, sessionId);
+}
+
+/** The session that owns the board, if it is still there. */
+export async function boardOwner(root: string): Promise<string | undefined> {
+	const file = ownerFile(root);
+	const holder = (await readText(file))?.trim();
+	if (holder === undefined || holder.length === 0) return undefined;
+	return (await holdIsStale(root, file, holder, Date.now())) ? undefined : holder;
+}
+
 /** Record that the user saw issue `id` as of `stamp` (the issue's `updated` when viewed). */
 export async function markSeen(root: string, id: number, stamp: string): Promise<void> {
-	const file = path.join(inboxDir(root), "seen", String(id));
-	await fsp.mkdir(path.dirname(file), { recursive: true });
 	// Last writer wins, and a reader sees either the old stamp or the new one.
-	const tmp = path.join(path.dirname(file), `.${id}.${crypto.randomBytes(4).toString("hex")}.tmp`);
-	await fsp.writeFile(tmp, stamp, { encoding: "utf8", flag: "wx" });
-	await fsp.rename(tmp, file);
+	await replaceFile(path.join(inboxDir(root), "seen", String(id)), stamp);
 }
 
 /**

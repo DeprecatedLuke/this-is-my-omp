@@ -43,6 +43,7 @@ Registered as a discoverable extension tool, so the host mounts it as the
 | `unarchive` | `id` | `status` (default `open`) | Restores the file to its category. |
 | `stage` | `id`, `stage` | — | Sets the issue's board column (`needs-you`, `up-next`, `running`, `awaiting-deploy`, `deferred`) or clears it with `none`; no read and no rewrite. |
 | `list` | — | `category`, `archived`, `severity`, `status`, `query`, `limit` | Markdown listing; `details.listing` feeds the TUI. |
+| `join` | — | — | Take board work in parallel with the session that owns the board (see below). |
 
 Ids are global across categories and stable across archive cycles. Bodies and
 metadata are **edited** by rewriting the issue through its `issues://<id>.md`
@@ -92,6 +93,40 @@ work, and cite issues as `issues://<id>`. The in-progress reminder points the
 same way: an issue not finished this turn goes back to `open` with `stage:
 running` or `needs-you`.
 
+### One session owns the board
+
+Several omp sessions can run in one checkout, and they all edit the same working
+tree. So the board belongs to exactly one of them at a time: only the **owner** is
+handed queued issues and replies. Everything else is a non-owner, and a non-owner
+is handed nothing — it still sees the board in its prompt and the in-progress
+reminder, and it can work any issue the user points it at directly.
+
+- **The lease** is `owner`, holding the owning session id. `acquireOwner` is the
+  same exclusive `link` as a claim: the first session to have free board work wins
+  it, and every other session is refused while that session is live. It is taken
+  lazily, on the first issue a session has to hand off, so a session with no board
+  work never grabs it.
+- **The heartbeat** is `sessions/<sessionId>`: JSON `{"parallel": bool}` whose
+  mtime is refreshed every 30 s while the session lives. A session is live while
+  its heartbeat is younger than `PRESENCE_STALE_MS` (120 s).
+- **Stale takeover.** A claim or lease naming a session that is no longer live is
+  stale: the next taker renames it to a dot-name (only one rename can win), checks
+  it still names the dead session, and links its own onto the name. A crashed
+  session therefore costs the checkout at most two minutes, not a restart. A hold
+  whose session never registered a heartbeat is respected while the hold itself is
+  younger than the window, so a session that writes its presence and its claim in
+  that order cannot lose the claim in between.
+- **`join`.** When the user wants this session to work in parallel, it calls
+  `{"op":"join"}`, which sets `parallel: true` in its presence. A parallel session
+  takes free board work alongside the owner; the owner keeps the lease. The op
+  needs the main session id, so a subagent is refused.
+- **`stage: running`** claims the issue for the calling session when it is free or
+  stale. If another live session holds it, the stage is still set and the result
+  appends `#<id> is held by another live session (<id>); two sessions on one issue
+  will conflict, so tell the user.`
+- **Shutdown** drops the session's presence, lease and claims, so the next session
+  in that checkout takes the board immediately.
+
 ### Replies
 
 A reply typed on the board is parked in the **local inbox**, never in the
@@ -101,7 +136,9 @@ git-tracked issue:
 ~/.omp/agent/issues-inbox/<checkout-slug>-<sha256(root)[:12]>/
   replies/<id>/<epochMs>-<rand>.txt   one pending reply per file
   queued/<id>                         empty: the user queued this issue here
-  claims/<id>                         the omp session id that owns the work
+  claims/<id>                         the omp session id that works this issue
+  owner                               the omp session id that owns the board
+  sessions/<sessionId>                presence `{"parallel":bool}`; mtime is the heartbeat
   seen/<id>, seen/.watermark          what the user already looked at
 ```
 
@@ -111,10 +148,11 @@ and a cloned repo's text cannot drive an agent. The git side only records that t
 user wants the issue worked: the issue moves to Up next — or keeps its stage when
 it is already `running`, and an archived issue reopens as `open` + `up-next`.
 
-Nothing wakes an idle session, so delivery happens at the next prompt of the first
-main session in that checkout. The issue is claimed first (`claim` is an exclusive
-`link`, so exactly one session wins), then each of its replies is taken with an
-atomic `rename` — a reply another session already took yields nothing. The plugin
+Nothing wakes an idle session, so delivery happens at the next prompt of the
+session that owns the board (or of one the user joined in parallel). The issue is
+claimed first (`claim` is an exclusive `link`, so exactly one session wins), then
+each of its replies is taken with an atomic `rename` — a reply another session
+already took yields nothing. The plugin
 adds an `<system-reminder>` custom message (`src/prompts/replies.md`, custom type
 `omp-issues/replies`) listing the taken texts with their `issues://<id>` and title,
 then appends each one to the issue body under `## Replies` as
@@ -140,7 +178,10 @@ the stage is already `running`, so later turn ends write nothing.
 
 Every queued issue is claimed for the session (`claims/<id>`), so parallel sessions
 in one checkout never take the same issue; a board move frees the claim, and
-`session_shutdown` releases everything the session still holds. The loop is bounded
+`session_shutdown` releases everything the session still holds. Only the board's
+owner — or a session the user joined with `{"op":"join"}` — is handed free work in
+the first place, and a claim left by a session that is gone is taken over instead
+of blocking the queue. The loop is bounded
 by the `remindersMax` setting. Each reminder compares the queue's signature with
 the previous one; the signature is the queued issues' `id:stage:status` plus their
 pending board replies. An unchanged signature counts as a stall and stops the

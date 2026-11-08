@@ -25,7 +25,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { isEnoent, isEnotempty, parseFrontmatter } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
-import { addReply, claimOwner, listQueued, listReplies, type PendingReply, setQueued } from "./inbox";
+import { addReply, claimIsStale, claimOwner, listQueued, listReplies, type PendingReply, setQueued } from "./inbox";
 
 /** Severity bucket. */
 export type IssueSeverity = "low" | "medium" | "high" | "critical";
@@ -1029,7 +1029,8 @@ export async function listQueuedIssues(root: string, sessionId: string): Promise
 	const visible: IssueRecord[] = [];
 	for (const record of candidates) {
 		const owner = await claimOwner(root, record.id);
-		if (owner === undefined || owner === sessionId) visible.push(record);
+		// A claim held by a session that is gone is stale: the work is free again.
+		if (owner === undefined || owner === sessionId || (await claimIsStale(root, record.id))) visible.push(record);
 	}
 	return visible.sort((a, b) => {
 		const aAt = replyOrder.get(a.id);

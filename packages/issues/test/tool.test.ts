@@ -7,8 +7,12 @@ import { afterEach, beforeEach, describe, expect, it, setSystemTime } from "bun:
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { claim, claimOwner, PRESENCE_STALE_MS, touchPresence } from "../src/inbox";
 import { findIssueById, getIssuesRoot, listIssues } from "../src/store";
 import { type IssuesToolDetails, runIssuesOp } from "../src/tool";
+import { useTempAgentDir } from "./agent-dir";
+
+useTempAgentDir();
 
 let tempDir: string;
 
@@ -239,5 +243,51 @@ describe("issues tool", () => {
 		expect(rejected.isError).toBe(true);
 		expect((rejected.details as IssuesToolDetails).error).toMatch(/invalid report/);
 		expect((await listIssues(tempDir)).map(summary => summary.title)).toEqual(["Flaky deploy"]);
+	});
+});
+
+describe("issues tool: stage running claims the issue for the calling session", () => {
+	const SELF = "4f1c2a9e";
+	const PEER = "9d0e7b31";
+
+	async function addRunnable(): Promise<number> {
+		const created = await runIssuesOp(tempDir, { op: "add", category: "infra", title: "Flaky deploy", body: "B." });
+		return (created.details as IssuesToolDetails).id!;
+	}
+
+	it("a main session claims a free issue; a call without a session id (a subagent) claims nothing", async () => {
+		const id = await addRunnable();
+
+		await runIssuesOp(tempDir, { op: "stage", id, stage: "running" });
+		expect(await claimOwner(tempDir, id)).toBeUndefined();
+
+		const started = await runIssuesOp(tempDir, { op: "stage", id, stage: "running" }, { sessionId: SELF });
+		expect(textOf(started)).toBe(`#${id} stage → running`);
+		expect(await claimOwner(tempDir, id)).toBe(SELF);
+	});
+
+	it("an issue another live session holds is still staged, keeps its holder, and the result warns", async () => {
+		const id = await addRunnable();
+		await touchPresence(tempDir, PEER);
+		expect(await claim(tempDir, id, PEER)).toBe(true);
+
+		const started = await runIssuesOp(tempDir, { op: "stage", id, stage: "running" }, { sessionId: SELF });
+
+		expect(started.isError).toBeUndefined();
+		expect((await findIssueById(tempDir, id))?.frontmatter.stage).toBe("running");
+		expect(textOf(started)).toContain(`#${id} is held by another live session (${PEER.slice(0, 6)})`);
+		expect(await claimOwner(tempDir, id)).toBe(PEER);
+	});
+
+	it("an issue held by a session whose heartbeat went stale is taken over without a warning", async () => {
+		const id = await addRunnable();
+		await touchPresence(tempDir, PEER);
+		expect(await claim(tempDir, id, PEER)).toBe(true);
+		setSystemTime(new Date(Date.now() + PRESENCE_STALE_MS + 1_000));
+
+		const started = await runIssuesOp(tempDir, { op: "stage", id, stage: "running" }, { sessionId: SELF });
+
+		expect(textOf(started)).toBe(`#${id} stage → running`);
+		expect(await claimOwner(tempDir, id)).toBe(SELF);
 	});
 });
