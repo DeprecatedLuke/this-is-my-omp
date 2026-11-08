@@ -17,18 +17,28 @@ while [ -L "$self" ]; do
 done
 pkg=$(cd -- "$(dirname -- "$self")/.." && pwd -P)
 
-bun=$(command -v bun || true)
+# omp's TypeScript needs a recent Bun (the omp host's `packageManager` floor);
+# an older one cannot resolve the `@oh-my-pi/*` tsconfig paths. A distro Bun
+# often comes first on the PATH a GUI app (Tern) hands its children, so take
+# the first candidate new enough rather than the first one found.
+# OMP_BOARD_BUN forces a binary.
+min_bun=1.4.4
+bun=${OMP_BOARD_BUN:-}
 if [ -z "$bun" ]; then
-	for candidate in "$HOME/.bun/bin/bun" "$HOME/.local/bin/bun"; do
-		if [ -x "$candidate" ]; then
+	found=()
+	for candidate in "$(command -v bun || true)" "$HOME/.bun/bin/bun" "$HOME/.local/bin/bun"; do
+		[ -n "$candidate" ] && [ -x "$candidate" ] || continue
+		version=$("$candidate" --version 2>/dev/null || true)
+		found+=("$candidate ${version:-?}")
+		if [ -n "$version" ] && printf '%s\n%s\n' "$min_bun" "$version" | sort -V -C; then
 			bun=$candidate
 			break
 		fi
 	done
-fi
-if [ -z "$bun" ]; then
-	printf 'omp-board: bun not found on PATH\n' >&2
-	exit 127
+	if [ -z "$bun" ]; then
+		printf 'omp-board: needs bun >= %s; found: %s\n' "$min_bun" "${found[*]:-none}" >&2
+		exit 127
+	fi
 fi
 
 # `e` runs nvim as a child of bun. If bun is wrapped in a bwrap sandbox that binds

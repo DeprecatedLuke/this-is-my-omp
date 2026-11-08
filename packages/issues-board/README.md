@@ -33,7 +33,10 @@ ln -s "$PWD/packages/issues-board/bin/omp-board" ~/.local/bin/omp-board
 ```
 
 `bin/omp-board` resolves its own path through symlinks and runs the TypeScript
-entrypoint with Bun, so it works from any directory.
+entrypoint with Bun, so it works from any directory. It needs Bun 1.4.4 or newer
+(omp's floor) and takes the first one that qualifies: the `bun` on `PATH`, then
+`~/.bun/bin/bun`, then `~/.local/bin/bun`. A distro Bun that is older than that
+is skipped. `OMP_BOARD_BUN=/path/to/bun` forces a binary.
 
 ## Usage
 
@@ -266,7 +269,8 @@ the TUI in a pane. The block is a client of [`omp-board api`](#api): every actio
 goes through the same TypeScript code as the terminal board, so the two cannot
 drift apart.
 
-Link the plugin once — it needs `bun`, which `bin/omp-board` finds on `PATH`:
+Link the plugin once. It runs `bin/omp-board`, so it needs a Bun the launcher
+accepts (see [Install](#install)):
 
 ```sh
 tern plugin link /path/to/this-is-my-omp/packages/issues-board/tern
