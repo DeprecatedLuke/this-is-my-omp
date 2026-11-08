@@ -10,7 +10,7 @@
  */
 import { getPluginSettings } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/loader";
 import type { ThemeColor } from "@oh-my-pi/pi-tui/theme";
-import { claimOwner, listReplies, type PendingReply, type SeenState } from "omp-issues/src/inbox";
+import { claimIsStale, claimOwner, listReplies, type PendingReply, type SeenState } from "omp-issues/src/inbox";
 import type { IssueMove, IssueRecord, IssueSeverity, IssueStatus } from "omp-issues/src/store";
 
 /** States the `1`-`7` keys set, in key order. `done` archives with a terminal status. */
@@ -302,17 +302,25 @@ export function buildList(records: readonly IssueRecord[], options: BuildListOpt
 export interface BoardInbox {
 	/** Pending replies per issue id, oldest first. */
 	replies: ReadonlyMap<number, readonly PendingReply[]>;
-	/** Claiming omp session id per issue id. */
+	/** Claiming omp session id per issue id; only live claims (a dead session's claim is free). */
 	claims: ReadonlyMap<number, string>;
 }
 
 export const EMPTY_INBOX: BoardInbox = { replies: new Map(), claims: new Map() };
 
-/** Read the inbox state for `records` from the checkout's issues inbox. */
+/**
+ * Read the inbox state for `records` from the checkout's issues inbox. A claim
+ * whose session stopped heartbeating is free to the plugin, so it is left out
+ * here too: the board never shows an issue as held by a session that is gone.
+ */
 export async function loadInbox(root: string, records: readonly IssueRecord[]): Promise<BoardInbox> {
+	const liveOwner = async (id: number): Promise<string | undefined> => {
+		const owner = await claimOwner(root, id);
+		return owner === undefined || (await claimIsStale(root, id)) ? undefined : owner;
+	};
 	const [pending, owners] = await Promise.all([
 		listReplies(root),
-		Promise.all(records.map(async record => [record.id, await claimOwner(root, record.id)] as const)),
+		Promise.all(records.map(async record => [record.id, await liveOwner(record.id)] as const)),
 	]);
 	const replies = new Map<number, PendingReply[]>();
 	for (const reply of pending) {

@@ -90,6 +90,8 @@ const HEADER_ROWS = 2;
 const DETAIL_VALUE_INDENT = 11;
 /** Session-id prefix a row shows; the detail view has the whole id. */
 const CLAIM_SHOWN_CHARS = 6;
+/** How often the board re-reads so claims of sessions that went away drop off. */
+const LIVENESS_RELOAD_MS = 30_000;
 
 /** Where the board was started: the checkout root that holds `.omp/issues`. */
 export interface BoardOptions {
@@ -186,6 +188,11 @@ export class BoardComponent implements Component {
 	#donePrompt: { id: number } | undefined;
 	#status: { text: string; tone: Tone } | undefined;
 	#watchers: IssuesWatcher[] = [];
+	/**
+	 * Re-reads on a clock: a claim goes stale when its session stops heartbeating,
+	 * which writes nothing the watchers could see.
+	 */
+	#livenessTimer: Timer | undefined;
 	/** Rows the list body has, for page-sized jumps. */
 	#bodyHeight = 1;
 	#moving = false;
@@ -216,6 +223,7 @@ export class BoardComponent implements Component {
 		} catch (error) {
 			this.#setStatus("error", `inbox: ${error instanceof Error ? error.message : String(error)}`);
 		}
+		this.#livenessTimer = setInterval(() => void this.#reload(), LIVENESS_RELOAD_MS);
 	}
 
 	run(): Promise<void> {
@@ -227,6 +235,8 @@ export class BoardComponent implements Component {
 		this.#disposed = true;
 		for (const watcher of this.#watchers) watcher.close();
 		this.#watchers = [];
+		clearInterval(this.#livenessTimer);
+		this.#livenessTimer = undefined;
 		this.#listScroll.dispose();
 		this.#detailScroll.dispose();
 		this.#done.resolve();
