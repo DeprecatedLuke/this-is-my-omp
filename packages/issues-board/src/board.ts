@@ -389,9 +389,9 @@ export class BoardComponent implements Component {
 			await moveIssue(this.#root, id, moveFor(state, record, doneStatus));
 			// Done ends the work, so its claim goes. Any other move keeps the issue
 			// with the session that holds it: a requeue or a later reply goes back to
-			// the session with the context, never to whichever session owns the
-			// board, so two sessions don't end up on one issue. Only a move to Up
-			// next queues it for this machine's agents.
+			// the session with the context, and an issue no session holds waits for
+			// one to be prompted to take it. Only a move to Up next queues it for
+			// this machine's agents.
 			if (state === "done") await releaseClaim(this.#root, id);
 			await setQueued(this.#root, id, state === "up-next");
 			const holder = state === "done" ? undefined : await this.#liveHolder(id);
@@ -508,8 +508,11 @@ export class BoardComponent implements Component {
 			this.#rememberReply(id, queued);
 			this.#rebuild();
 			const holder = await this.#liveHolder(id);
-			const target = holder === undefined ? "the board owner" : `session ${holder}`;
-			this.#status = { text: `#${id} reply queued for ${target}`, tone: "success" };
+			const text =
+				holder === undefined
+					? `#${id} reply waits until a session takes the issue`
+					: `#${id} reply queued for session ${holder}`;
+			this.#status = { text, tone: "success" };
 		} catch (error) {
 			this.#status = { text: `#${id}: ${error instanceof Error ? error.message : String(error)}`, tone: "error" };
 		}

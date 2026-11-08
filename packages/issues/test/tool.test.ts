@@ -172,6 +172,34 @@ describe("issues tool", () => {
 		});
 	});
 
+	it("list with a stage returns only issues on that stage; `none` matches issues with no stage", async () => {
+		const rows: Array<{ title: string; stage?: "running" | "up-next" | "needs-you" }> = [
+			{ title: "Running work", stage: "running" },
+			{ title: "Queued work", stage: "up-next" },
+			{ title: "Parked work", stage: "needs-you" },
+			{ title: "Unstaged work" },
+		];
+		for (const { title, stage } of rows) {
+			const created = await runIssuesOp(tempDir, { op: "add", category: "infra", title, body: "Body." });
+			const id = (created.details as IssuesToolDetails).id!;
+			if (stage !== undefined) await runIssuesOp(tempDir, { op: "stage", id, stage });
+		}
+		// Archived issues carry no stage, so only `none` matches them.
+		const done = await runIssuesOp(tempDir, { op: "add", category: "infra", title: "Done work", body: "Body." });
+		await runIssuesOp(tempDir, { op: "archive", id: (done.details as IssuesToolDetails).id! });
+
+		const listed = async (stage: "running" | "up-next" | "none"): Promise<string[]> => {
+			const result = await runIssuesOp(tempDir, { op: "list", stage });
+			const details = result.details as IssuesToolDetails;
+			expect(details.filters?.stage).toBe(stage);
+			expect(textOf(result)).toContain(`stage=${stage}`);
+			return details.listing!.map(summary => summary.title).sort();
+		};
+		expect(await listed("running")).toEqual(["Running work"]);
+		expect(await listed("up-next")).toEqual(["Queued work"]);
+		expect(await listed("none")).toEqual(["Done work", "Unstaged work"]);
+	});
+
 	it("reports unknown ids as an error result instead of throwing", async () => {
 		const archived = await runIssuesOp(tempDir, { op: "archive", id: 999 });
 		expect(archived.isError).toBe(true);

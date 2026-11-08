@@ -155,8 +155,8 @@ half-delivered reply or a session id.
 `<repo>-<hash>` is the checkout's directory name plus the first 12 hex digits of
 the sha256 of its real path, so two checkouts never share state.
 
-A queued reply waits until the next prompt (or turn end) of an omp main session
-in that checkout. That session takes the file atomically — a rename, so two
+A queued reply waits until the next prompt (or turn end) of the omp main session
+holding that issue. That session takes the file atomically — a rename, so two
 sessions can never deliver the same reply — receives the text as a system
 reminder, and the delivered text is appended to the issue body under
 `## Replies` / `### User reply · <time>`, which *is* committed. Replying also
@@ -170,12 +170,21 @@ Rows with a pending reply show a `reply` badge, and the detail view lists each
 pending reply with the time it was queued. An issue claimed by an omp session
 shows `⧗` plus the first six characters of the session id (the detail view shows
 the whole id); claims are atomic, so two sessions cannot take the same issue.
-A reply or a state change goes to the session holding the issue while it is
-alive, and to the session that owns the board otherwise. A claim left behind by
-a dead session (no heartbeat for two minutes) is free again.
 
-At the end of a turn an agent loops on the issues queued for this machine until
-it moves them on; `needs-you` (feedback required) breaks the loop.
+### An issue follows the session you gave it to
+
+Nothing takes an issue on its own. An issue becomes a session's work when the user
+asks that session to work on it, and the agent then sets it `running`, which
+claims it. From then on a reply or a state change goes to that session, and to no
+other: the footer says `stays with session xxxxxx` or `reply queued for session
+xxxxxx`. An issue no session holds waits — the footer says `reply waits until a
+session takes the issue` — until the user prompts a session to take it. A claim
+left behind by a dead session (no heartbeat for two minutes) is free for the next
+prompted session to take over.
+
+At the end of a turn an agent loops on the issues it holds that are queued for
+this machine until it moves them on; `needs-you` (feedback required) breaks the
+loop.
 
 ## Reports
 

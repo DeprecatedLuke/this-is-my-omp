@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { parseFrontmatter } from "@oh-my-pi/pi-utils";
 import type { BunFile } from "bun";
-import { claim, listQueued, listReplies, setQueued, takeReply } from "../src/inbox";
+import { claim, listQueued, listReplies, PRESENCE_STALE_MS, setQueued, takeReply, touchPresence } from "../src/inbox";
 import {
 	addIssue,
 	appendReplyHistory,
@@ -720,6 +720,12 @@ async function pendingTexts(cwd: string, id: number): Promise<string[]> {
 	return (await listReplies(cwd)).filter(reply => reply.id === id).map(reply => reply.text);
 }
 
+/** Issue `id` is `sessionId`'s work: a live session holding its claim, as the `stage: running` op leaves it. */
+async function hold(id: number, sessionId = "session-a"): Promise<void> {
+	await touchPresence(tempDir, sessionId);
+	expect(await claim(tempDir, id, sessionId)).toBe(true);
+}
+
 describe("issues store: replyToIssue", () => {
 	afterEach(() => {
 		setSystemTime();
@@ -809,12 +815,13 @@ describe("issues store: replyToIssue", () => {
 			});
 
 			await replyToIssue(tempDir, record.id, "Any update?");
+			await hold(record.id);
 
 			const onDisk = await readFrontmatterOnDisk(record.filePath);
 			expect(onDisk.stage).toBe(column.expected);
 			expect("stage" in onDisk).toBe(column.expected !== undefined);
 			expect(onDisk.status).toBe(column.status);
-			// Whatever the column, the reply itself reaches the turn-end queue.
+			// Whatever the column, the reply itself reaches the holder's turn-end queue.
 			expect(await pendingTexts(tempDir, record.id)).toEqual(["Any update?"]);
 			expect(ids(await listQueuedIssues(tempDir, "session-a"))).toEqual([record.id]);
 		});
@@ -837,6 +844,7 @@ describe("issues store: replyToIssue", () => {
 		expect(onDisk.stage).toBe("up-next");
 		expect("archive_reason" in onDisk).toBe(false);
 		expect(await pendingTexts(tempDir, record.id)).toEqual(["Still broken on arm."]);
+		await hold(record.id);
 		expect(ids(await listQueuedIssues(tempDir, "session-a"))).toEqual([record.id]);
 	});
 
@@ -901,6 +909,7 @@ describe("issues store: turn-end queue", () => {
 
 	it("a committed up-next stage without a local queue mark is not queued", async () => {
 		const record = await upNext("Up next in a clone");
+		await hold(record.id);
 		expect(await listQueuedIssues(tempDir, "session-a")).toEqual([]);
 
 		await setQueued(tempDir, record.id, true);
@@ -910,6 +919,7 @@ describe("issues store: turn-end queue", () => {
 	it("a queued issue the agent moved to running stays queued and keeps its mark", async () => {
 		const record = await upNext("Flaky deploy");
 		await setQueued(tempDir, record.id, true);
+		await hold(record.id);
 
 		await moveIssue(tempDir, record.id, { stage: "running" });
 
@@ -932,6 +942,8 @@ describe("issues store: turn-end queue", () => {
 			const other = await upNext("Still queued");
 			await setQueued(tempDir, record.id, true);
 			await setQueued(tempDir, other.id, true);
+			await hold(record.id);
+			await hold(other.id);
 
 			await row.act(record.id);
 
@@ -940,7 +952,7 @@ describe("issues store: turn-end queue", () => {
 		});
 	}
 
-	it("puts replied issues first, oldest reply first, and hides issues another session claimed", async () => {
+	it("puts replied issues first, oldest reply first, then queued issues by id", async () => {
 		const queuedLow = await upNext("Queued low");
 		const queuedHigh = await upNext("Queued high");
 		const repliedLater = (
@@ -948,9 +960,11 @@ describe("issues store: turn-end queue", () => {
 		).record;
 		const repliedEarlier = (await addIssue(tempDir, { category: "infra", title: "Replied earlier", body: "B." }))
 			.record;
-		// Unqueued up-next work and other columns never show up.
-		await upNext("Not queued here");
-		await addIssue(tempDir, { category: "infra", title: "Needs you", body: "B.", extra: { stage: "needs-you" } });
+		// Unqueued up-next work and other columns never show up, even when held.
+		const notQueued = await upNext("Not queued here");
+		const needsYou = (
+			await addIssue(tempDir, { category: "infra", title: "Needs you", body: "B.", extra: { stage: "needs-you" } })
+		).record;
 		await setQueued(tempDir, queuedLow.id, true);
 		await setQueued(tempDir, queuedHigh.id, true);
 		// Reply order defeats id order: the higher id replied first.
@@ -959,16 +973,42 @@ describe("issues store: turn-end queue", () => {
 		setSystemTime(new Date("2026-01-02T00:00:00.000Z"));
 		await replyToIssue(tempDir, repliedLater.id, "Second.");
 		setSystemTime();
+		for (const record of [queuedLow, queuedHigh, repliedLater, repliedEarlier, notQueued, needsYou]) {
+			await hold(record.id);
+		}
 
-		const everything = [repliedEarlier.id, repliedLater.id, queuedLow.id, queuedHigh.id];
-		expect(ids(await listQueuedIssues(tempDir, "session-a"))).toEqual(everything);
+		expect(ids(await listQueuedIssues(tempDir, "session-a"))).toEqual([
+			repliedEarlier.id,
+			repliedLater.id,
+			queuedLow.id,
+			queuedHigh.id,
+		]);
+	});
 
-		expect(await claim(tempDir, queuedLow.id, "session-b")).toBe(true);
-		expect(await claim(tempDir, repliedEarlier.id, "session-b")).toBe(true);
+	it("queues an issue only for the session holding it with a live claim", async () => {
+		const free = await upNext("Nobody holds this");
+		const mine = await upNext("Held by a");
+		const theirs = await upNext("Held by b");
+		const abandoned = await upNext("Held by a session that died");
+		for (const record of [free, mine, theirs, abandoned]) {
+			await replyToIssue(tempDir, record.id, "Any update?");
+		}
+		await hold(mine.id, "session-a");
+		await hold(theirs.id, "session-b");
+		await hold(abandoned.id, "session-c");
+		// session-c stops beating; a and b refresh on the new clock.
+		setSystemTime(new Date(Date.now() + PRESENCE_STALE_MS + 1_000));
+		await touchPresence(tempDir, "session-a");
+		await touchPresence(tempDir, "session-b");
 
-		expect(ids(await listQueuedIssues(tempDir, "session-a"))).toEqual([repliedLater.id, queuedHigh.id]);
-		// The claimant keeps seeing its own claims, in the same order.
-		expect(ids(await listQueuedIssues(tempDir, "session-b"))).toEqual(everything);
+		expect(ids(await listQueuedIssues(tempDir, "session-a"))).toEqual([mine.id]);
+		expect(ids(await listQueuedIssues(tempDir, "session-b"))).toEqual([theirs.id]);
+		// The stale holder is nobody's work until a session claims it again.
+		expect(ids(await listQueuedIssues(tempDir, "session-c"))).toEqual([]);
+		// Listing claims nothing: the free issue is still free, its reply still pending.
+		expect(await claim(tempDir, free.id, "session-b")).toBe(true);
+		expect(await pendingTexts(tempDir, free.id)).toEqual(["Any update?"]);
+		expect(ids(await listQueuedIssues(tempDir, "session-b"))).toEqual([free.id, theirs.id]);
 	});
 });
 

@@ -1,5 +1,5 @@
 <system-reminder>
-The user replied on {{count}} issue(s) from `omp-board`. Each reply below is the user's instruction on that issue: treat it as part of this prompt and handle it alongside their message.
+The user replied on {{count}} issue(s) from `omp-board` that this session holds. Each reply below is the user's instruction on that issue: treat it as part of this prompt and handle it alongside their message.
 
 {{replies}}
 

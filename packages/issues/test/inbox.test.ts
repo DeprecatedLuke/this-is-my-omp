@@ -1,17 +1,15 @@
 /**
  * User-local inbox: the locks and hand-offs parallel sessions race on. A claim
  * and a reply take must each have exactly one winner, a session going away
- * frees only its own claims, a hold (claim or board lease) outlives a live
- * holder but not a stale one, and the seen watermark is fixed at first use.
+ * frees only its own claims, a claim outlives a live holder but not a stale
+ * one, and the seen watermark is fixed at first use.
  */
 import { afterEach, beforeEach, describe, expect, it, setSystemTime } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
-	acquireOwner,
 	addReply,
-	boardOwner,
 	claim,
 	claimIsStale,
 	claimOwner,
@@ -19,7 +17,6 @@ import {
 	loadSeen,
 	markSeen,
 	PRESENCE_STALE_MS,
-	releaseOwner,
 	releaseSessionClaims,
 	takeReply,
 	touchPresence,
@@ -111,43 +108,6 @@ describe("inbox: claims", () => {
 
 		expect(await claim(tempDir, 1, "session-c")).toBe(true);
 		expect(await claimOwner(tempDir, 1)).toBe("session-c");
-	});
-});
-
-describe("inbox: board lease", () => {
-	it("the first session takes the lease, a live holder keeps it, and a stale one is taken over", async () => {
-		await touchPresence(tempDir, "session-a");
-		await touchPresence(tempDir, "session-b");
-		expect(await boardOwner(tempDir)).toBeUndefined();
-
-		expect(await acquireOwner(tempDir, "session-a")).toBe(true);
-		expect(await acquireOwner(tempDir, "session-a")).toBe(true);
-		expect(await acquireOwner(tempDir, "session-b")).toBe(false);
-		expect(await boardOwner(tempDir)).toBe("session-a");
-
-		await outliveWindow("session-b");
-
-		expect(await boardOwner(tempDir)).toBeUndefined();
-		expect(await acquireOwner(tempDir, "session-b")).toBe(true);
-		expect(await boardOwner(tempDir)).toBe("session-b");
-		// The old owner coming back does not take the board from a live holder.
-		await touchPresence(tempDir, "session-a");
-		expect(await acquireOwner(tempDir, "session-a")).toBe(false);
-		expect(await boardOwner(tempDir)).toBe("session-b");
-	});
-
-	it("releaseOwner frees the lease for its holder only", async () => {
-		await touchPresence(tempDir, "session-a");
-		await touchPresence(tempDir, "session-b");
-		expect(await acquireOwner(tempDir, "session-a")).toBe(true);
-
-		await releaseOwner(tempDir, "session-b");
-		expect(await boardOwner(tempDir)).toBe("session-a");
-		expect(await acquireOwner(tempDir, "session-b")).toBe(false);
-
-		await releaseOwner(tempDir, "session-a");
-		expect(await boardOwner(tempDir)).toBeUndefined();
-		expect(await acquireOwner(tempDir, "session-b")).toBe(true);
 	});
 });
 

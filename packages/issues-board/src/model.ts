@@ -314,13 +314,13 @@ export const EMPTY_INBOX: BoardInbox = { replies: new Map(), claims: new Map() }
  * here too: the board never shows an issue as held by a session that is gone.
  */
 export async function loadInbox(root: string, records: readonly IssueRecord[]): Promise<BoardInbox> {
-	const liveOwner = async (id: number): Promise<string | undefined> => {
-		const owner = await claimOwner(root, id);
-		return owner === undefined || (await claimIsStale(root, id)) ? undefined : owner;
+	const liveHolder = async (id: number): Promise<string | undefined> => {
+		const holder = await claimOwner(root, id);
+		return holder === undefined || (await claimIsStale(root, id)) ? undefined : holder;
 	};
-	const [pending, owners] = await Promise.all([
+	const [pending, holders] = await Promise.all([
 		listReplies(root),
-		Promise.all(records.map(async record => [record.id, await liveOwner(record.id)] as const)),
+		Promise.all(records.map(async record => [record.id, await liveHolder(record.id)] as const)),
 	]);
 	const replies = new Map<number, PendingReply[]>();
 	for (const reply of pending) {
@@ -329,7 +329,7 @@ export async function loadInbox(root: string, records: readonly IssueRecord[]): 
 		else replies.set(reply.id, [reply]);
 	}
 	const claims = new Map<number, string>();
-	for (const [id, owner] of owners) if (owner !== undefined) claims.set(id, owner);
+	for (const [id, holder] of holders) if (holder !== undefined) claims.set(id, holder);
 	return { replies, claims };
 }
 

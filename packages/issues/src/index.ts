@@ -17,15 +17,11 @@ import { InternalUrlRouter } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import { subprocessToolRegistry } from "@oh-my-pi/pi-coding-agent/task/subprocess-tool-registry";
 import { boardSection, filedIssuesSection } from "./catalogue";
 import {
-	acquireOwner,
-	claim,
 	claimIsStale,
 	claimOwner,
-	isParallel,
 	listReplies,
 	type PendingReply,
 	refreshPresence,
-	releaseOwner,
 	releaseSessionClaims,
 	removePresence,
 	takeReply,
@@ -142,35 +138,22 @@ async function markRunning(pi: ExtensionAPI, root: string, id: number): Promise<
 const PRESENCE_HEARTBEAT_MS = 30_000;
 
 /**
- * Whether a hand-off pass may take an issue it does not already hold: only when
- * the user joined this session in parallel (`issues` op `join`), or when it wins
- * the board lease. The lease is taken lazily — on the first free issue this
- * session has to hand off — so a session with no board work never grabs it.
+ * Whether this hand-off pass covers issue `id`: only an issue this session holds,
+ * with a live claim, comes here. Nothing is handed out on its own — an issue
+ * becomes a session's work when the user prompts that session to set it `running`,
+ * which claims it — so a free issue, and one a dead session left behind, waits for
+ * that prompt instead of arriving as work.
  */
-async function mayTakeFreeWork(root: string, sessionId: string, cache: { allowed?: boolean }): Promise<boolean> {
-	if (cache.allowed === undefined) {
-		cache.allowed = (await isParallel(root, sessionId)) || (await acquireOwner(root, sessionId));
-	}
-	return cache.allowed;
-}
-
-/**
- * Whether this hand-off pass takes issue `id`: one this session already holds
- * always comes here, one another session still holds is left alone, and a free or
- * stale-claimed one needs {@link mayTakeFreeWork}.
- */
-async function mayTake(root: string, id: number, sessionId: string, cache: { allowed?: boolean }): Promise<boolean> {
-	if ((await claimOwner(root, id)) === sessionId) return true;
-	if (!(await claimIsStale(root, id))) return false;
-	return mayTakeFreeWork(root, sessionId, cache);
+async function mayTake(root: string, id: number, sessionId: string): Promise<boolean> {
+	if ((await claimOwner(root, id)) !== sessionId) return false;
+	return !(await claimIsStale(root, id));
 }
 
 /**
  * Turn the replies the user typed on `omp-board` into a reminder on this prompt,
  * then record them in their issues. Nothing wakes an idle session, so the next
- * prompt of the session that owns the board — or of one the user joined in
- * parallel — is the delivery point; the issue is claimed before its replies are
- * taken, so no other session answers the same reply.
+ * prompt of the session holding an issue is the delivery point: a reply to an
+ * issue no session holds waits in the inbox until one is prompted to take it.
  *
  * A store or inbox failure never blocks the prompt: the reminder is best-effort,
  * and a reply that could not be taken simply stays pending for the next prompt.
@@ -194,16 +177,15 @@ async function deliverReplies(
 	if (pending.length === 0) return undefined;
 
 	const delivered: IssueReplies[] = [];
-	const gate: { allowed?: boolean } = {};
 	for (const [id, replies] of groupByIssue(pending)) {
 		let record: IssueRecord | undefined;
 		try {
-			// The board hands free work to its owner only; the claim is the lock.
-			if (!(await mayTake(root, id, sessionId, gate))) continue;
-			if (!(await claim(root, id, sessionId))) continue;
+			// Only the session holding the issue answers its replies; a free issue's
+			// reply waits until a session is prompted to take it.
+			if (!(await mayTake(root, id, sessionId))) continue;
 			record = await findIssueById(root, id);
 		} catch (error) {
-			pi.logger.debug("issues: failed to claim an issue with pending replies", {
+			pi.logger.debug("issues: failed to read an issue with pending replies", {
 				id,
 				error: error instanceof Error ? error.message : String(error),
 			});
@@ -233,9 +215,9 @@ async function deliverReplies(
 
 /**
  * The turn-end queue reminder, or undefined when nothing is queued (or the stall
- * guard has spent its allowance). Claiming happens here, in the same pass that
- * hands the reminder out, so two sessions in one checkout never both take an
- * issue: the claim is the lock, and free work only reaches the board's owner.
+ * guard has spent its allowance). The queue is the issues this session holds
+ * ({@link listQueuedIssues}), so a requeue or a reply the user aimed at this
+ * session's work comes back here; an issue no session holds is never queued.
  */
 async function takeQueueReminder(
 	pi: ExtensionAPI,
@@ -264,36 +246,13 @@ async function takeQueueReminder(
 			error: error instanceof Error ? error.message : String(error),
 		});
 	}
-	// Free work goes to the board's owner only, so a non-owner has no queue at
-	// all: it neither claims nor spends its reminder budget on work it cannot take.
-	const gate: { allowed?: boolean } = {};
-	const takeable: IssueRecord[] = [];
-	for (const record of queue) {
-		try {
-			if (await mayTake(root, record.id, sessionId, gate)) takeable.push(record);
-		} catch (error) {
-			pi.logger.debug("issues: failed to check a queued issue's claim", {
-				id: record.id,
-				error: error instanceof Error ? error.message : String(error),
-			});
-		}
-	}
-	if (takeable.length === 0) return undefined;
 	// An unchanged queue is a stalled loop: remind a bounded number of times.
-	if (!guard.take(queueSignature(takeable, pending), max)) return undefined;
+	if (!guard.take(queueSignature(queue, pending), max)) return undefined;
 	const byIssue = groupByIssue(pending);
 
 	const delivered: IssueReplies[] = [];
-	for (const record of takeable) {
-		try {
-			if (!(await claim(root, record.id, sessionId))) continue;
-		} catch (error) {
-			pi.logger.debug("issues: failed to claim a queued issue", {
-				id: record.id,
-				error: error instanceof Error ? error.message : String(error),
-			});
-			continue;
-		}
+	for (const record of queue) {
+		// A requeued issue is handed back as work in flight: the board shows Running.
 		await markRunning(pi, root, record.id);
 		delivered.push({ record, replies: await takeReplies(pi, root, byIssue.get(record.id) ?? [], sessionId) });
 	}
@@ -306,11 +265,10 @@ async function takeQueueReminder(
 /**
  * The in-progress reminder: unchanged in spirit, it fires while an issue is still
  * `status: in-progress` and spends one unit of the per-prompt budget. Like the
- * hand-offs, it only covers issues this session may take — ones it holds, or free
- * ones when it owns the board — so a session is never told to finish another
- * session's work. Only the in-progress budget resets here — clearing the queue
- * guard's stall count when no issue is in progress would let a stalled queue loop
- * forever.
+ * hand-offs, it only covers issues this session holds, so a session is never told
+ * to finish another session's work. Only the in-progress budget resets here —
+ * clearing the queue guard's stall count when no issue is in progress would let a
+ * stalled queue loop forever.
  */
 async function takeInProgressReminder(
 	pi: ExtensionAPI,
@@ -330,11 +288,10 @@ async function takeInProgressReminder(
 		return undefined;
 	}
 	const sessionId = ctx.sessionManager.getSessionId();
-	const gate: { allowed?: boolean } = {};
 	const mine: IssueSummary[] = [];
 	for (const issue of inProgress) {
 		try {
-			if (await mayTake(ctx.cwd, issue.id, sessionId, gate)) mine.push(issue);
+			if (await mayTake(ctx.cwd, issue.id, sessionId)) mine.push(issue);
 		} catch (error) {
 			pi.logger.debug("issues reminder: failed to check an in-progress issue's claim", {
 				id: issue.id,
@@ -387,11 +344,11 @@ export default function issuesPlugin(pi: ExtensionAPI): void {
 	pi.on("session_start", resetReminders);
 	pi.on("session_switch", resetReminders);
 
-	// One session per checkout owns the board: only the owner is handed queued
-	// issues and replies, so two sessions never edit the same working tree. The
-	// owner is whoever holds the `owner` lease, and its liveness is a heartbeat
-	// file, so a crashed session's lease and claims are taken over instead of
-	// blocking the checkout forever.
+	// A session's presence is a heartbeat file, and its claims are what make the
+	// board follow it: only the session holding an issue is handed that issue's
+	// replies and requeues. Nothing is claimed on a session's behalf — the user
+	// prompts a session to take an issue — and a claim whose heartbeat stopped is
+	// taken over, so a crashed session blocks nothing forever.
 	let registered: { root: string; sessionId: string } | undefined;
 
 	const logInboxFailure = (what: string, error: unknown): void => {
@@ -402,7 +359,6 @@ export default function issuesPlugin(pi: ExtensionAPI): void {
 	const dropRegistration = async (root: string, sessionId: string): Promise<void> => {
 		try {
 			await removePresence(root, sessionId);
-			await releaseOwner(root, sessionId);
 			await releaseSessionClaims(root, sessionId);
 		} catch (error) {
 			logInboxFailure("failed to drop a session's board registration", error);
@@ -420,8 +376,8 @@ export default function issuesPlugin(pi: ExtensionAPI): void {
 		}
 	};
 
-	// The heartbeat is what keeps this session's claims and lease alive. It is
-	// unref'd, so it never holds the process open, and cleared on shutdown.
+	// The heartbeat is what keeps this session's claims alive. It is unref'd, so
+	// it never holds the process open, and cleared on shutdown.
 	let heartbeat: Timer | undefined;
 	const startHeartbeat = (): void => {
 		if (heartbeat !== undefined) return;
@@ -431,9 +387,9 @@ export default function issuesPlugin(pi: ExtensionAPI): void {
 
 	/**
 	 * Follow this session into the inbox: register it, or just refresh it. A
-	 * changed session id (`/new`, a switch, a branch) drops the old id's
-	 * presence, lease and claims first, so nothing is held by a session that is
-	 * gone. Best effort: an inbox failure never blocks the prompt.
+	 * changed session id (`/new`, a switch, a branch) drops the old id's presence
+	 * and claims first, so nothing is held by a session that is gone. Best effort:
+	 * an inbox failure never blocks the prompt.
 	 */
 	const syncRegistration = async (ctx: ExtensionContext): Promise<void> => {
 		if (ctx.agent.kind !== "main") return;
@@ -459,9 +415,9 @@ export default function issuesPlugin(pi: ExtensionAPI): void {
 	pi.on("session_branch", (_event, ctx) => syncRegistration(ctx));
 	pi.on("session_tree", (_event, ctx) => syncRegistration(ctx));
 
-	// A session that goes away must not keep the board or its issues out of every
-	// other session's reach: drop its presence, lease and claims. Best effort —
-	// shutdown must never throw.
+	// A session that goes away must not keep its issues out of every other
+	// session's reach: drop its presence and claims. Best effort — shutdown must
+	// never throw.
 	pi.on("session_shutdown", async (_event, ctx) => {
 		if (ctx.agent.kind !== "main") return;
 		const current = registered;

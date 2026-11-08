@@ -40,9 +40,7 @@ const SEVERITY_RANK: Record<IssueSeverity, number> = { critical: 0, high: 1, med
 function opOf(args: unknown): IssuesToolParams["op"] | undefined {
 	if (!isRecord(args)) return undefined;
 	const op = args.op;
-	return op === "add" || op === "archive" || op === "unarchive" || op === "stage" || op === "list" || op === "join"
-		? op
-		: undefined;
+	return op === "add" || op === "archive" || op === "unarchive" || op === "stage" || op === "list" ? op : undefined;
 }
 
 function severityBadge(theme: Theme, severity: IssueSeverity | undefined): string | undefined {
@@ -107,6 +105,7 @@ function filterMeta(filters: IssueFilters): string[] {
 	else if (filters.archived === false) meta.push("active");
 	if (filters.severity) meta.push(`severity=${filters.severity}`);
 	if (filters.status) meta.push(`status=${filters.status}`);
+	if (filters.stage) meta.push(`stage=${filters.stage}`);
 	if (filters.query) meta.push(`q=${filters.query}`);
 	if (filters.limit !== undefined) meta.push(`limit=${filters.limit}`);
 	return meta;
@@ -130,6 +129,7 @@ export function renderIssuesCall(args: unknown, options: ToolRenderResultOptions
 			archived: typeof record.archived === "boolean" ? record.archived : undefined,
 			severity: typeof record.severity === "string" ? (record.severity as IssueSeverity) : undefined,
 			status: typeof record.status === "string" ? (record.status as IssueStatus) : undefined,
+			stage: typeof record.stage === "string" ? (record.stage as IssueStage | "none") : undefined,
 			query: typeof record.query === "string" ? record.query : undefined,
 		}).join(" ");
 	}
@@ -210,24 +210,6 @@ function stageCard(theme: Theme, details: IssuesToolDetails, expanded: boolean):
 	});
 }
 
-/** `join` result: this session now shares the board with its owner. */
-function joinCard(theme: Theme, details: IssuesToolDetails): Component {
-	const owner = details.owner;
-	const body =
-		owner === undefined
-			? [theme.fg("dim", "no other owner")]
-			: keyValueRows(theme, [["owner", theme.fg("accent", owner)]]);
-	return toolCard(theme, {
-		header: {
-			tool: TOOL_LABEL,
-			icon: "success",
-			title: "board work in parallel",
-			badges: [{ text: "join", tone: "accent" }],
-		},
-		body,
-	});
-}
-
 /** `list` result: severity-sorted rows, collapsed with a counted footer. */
 function listView(theme: Theme, details: IssuesToolDetails, expanded: boolean): Component {
 	const summaries = sortForDisplay(details.listing ?? []);
@@ -264,8 +246,6 @@ export function renderIssuesResult(
 	switch (details.op) {
 		case "list":
 			return listView(theme, details, options.expanded);
-		case "join":
-			return joinCard(theme, details);
 		case "archive":
 		case "unarchive":
 			return moveCard(theme, details, options.expanded);

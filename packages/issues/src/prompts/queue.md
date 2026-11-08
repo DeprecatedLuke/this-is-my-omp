@@ -1,5 +1,5 @@
 <system-reminder>
-The board has {{count}} issue(s) queued for you. The user wants them worked now, in this session — keep going instead of stopping.
+{{count}} issue(s) this session holds are queued on the board: the user requeued them or replied on them. Keep going instead of stopping.
 
 {{issues}}
 

@@ -14,7 +14,7 @@ import * as z from "@oh-my-pi/omptype/zod";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { ExtensionContext, ToolDefinition } from "@oh-my-pi/pi-coding-agent";
 import { prompt, untilAborted } from "@oh-my-pi/pi-utils";
-import { boardOwner, claim, claimIsStale, claimOwner, touchPresence } from "./inbox";
+import { claim, claimIsStale, claimOwner, releaseClaim } from "./inbox";
 import issuesDescription from "./prompts/tool.md" with { type: "text" };
 import { renderIssuesCall, renderIssuesResult } from "./render";
 import { readIssuesSettings } from "./settings";
@@ -76,15 +76,15 @@ const listParams = z.object({
 	archived: z.boolean().describe("true → archived only; false → active only; omit → both").optional(),
 	severity: severityEnum.optional(),
 	status: statusEnum.optional(),
+	stage: z
+		.enum([...ISSUE_STAGES, "none"])
+		.describe("board stage to filter on; `none` matches issues with no stage")
+		.optional(),
 	query: z.string().describe("substring filter against title/body/frontmatter").optional(),
 	limit: z.number().int().positive().optional(),
 });
 
-const joinParams = z.object({
-	op: z.literal("join"),
-});
-
-const issuesSchema = z.union([addParams, archiveParams, unarchiveParams, stageParams, listParams, joinParams]);
+const issuesSchema = z.union([addParams, archiveParams, unarchiveParams, stageParams, listParams]);
 export type IssuesToolParams = z.infer<typeof issuesSchema>;
 
 /** Filters a `list` call ran with, echoed in `details` so renderers never parse text. */
@@ -93,6 +93,7 @@ export interface IssueFilters {
 	archived?: boolean;
 	severity?: IssueSeverity;
 	status?: IssueStatus;
+	stage?: IssueStage | "none";
 	query?: string;
 	limit?: number;
 }
@@ -128,10 +129,6 @@ export interface IssuesToolDetails {
 	confidence?: number;
 	/** Failure message when the op reported an error instead of throwing. */
 	error?: string;
-	/** `join` put this session on the board alongside its owner. */
-	parallel?: boolean;
-	/** Session that owns the board, as `join` found it. */
-	owner?: string;
 }
 
 function urlForRecord(record: IssueRecord): string {
@@ -219,6 +216,14 @@ async function executeArchive(
 		reason: params.reason,
 		status: params.status,
 	});
+	// The work is over, so the issue stops following any session: its claim goes,
+	// exactly as the board's Done does. Bookkeeping only — a failed release must
+	// not turn a completed archive into an error.
+	try {
+		await releaseClaim(cwd, params.id);
+	} catch {
+		// The claim reads as stale once the session stops beating; nothing to do.
+	}
 	const details: IssuesToolDetails = {
 		...detailsFromRecord("archive", record),
 		unchanged: wasArchived,
@@ -261,41 +266,30 @@ async function executeStage(
 	};
 	let text =
 		params.stage === "none" ? `#${record.id} stage cleared` : `#${record.id} stage → ${record.frontmatter.stage}`;
-	// Setting an issue running is starting it, so the session takes the claim —
-	// unless a live session already works it. The claim is bookkeeping: a failed
-	// write must not turn a stage the file already carries into an error.
-	if (params.stage === "running" && sessionId !== undefined) {
-		try {
+	// The claim is bookkeeping: a failed write must not turn a stage the file
+	// already carries into an error.
+	try {
+		if (record.archived) {
+			// A move onto a terminal status archives, and archived work is over: the
+			// issue stops following any session, exactly as `archive` and the board's
+			// Done leave it.
+			await releaseClaim(cwd, record.id);
+		} else if (params.stage === "running" && sessionId !== undefined) {
+			// Setting an issue running is how the user hands it to this session: it
+			// claims the issue, and from then on the issue's replies and requeues come
+			// here. A live session already working it is not displaced — the stage is
+			// still set, and the result tells the agent to raise it with the user.
 			const holder = await claimOwner(cwd, record.id);
 			if (holder !== undefined && holder !== sessionId && !(await claimIsStale(cwd, record.id))) {
 				text += `\n#${record.id} is held by another live session (${holder.slice(0, 6)}); two sessions on one issue will conflict, so tell the user.`;
 			} else {
 				await claim(cwd, record.id, sessionId);
 			}
-		} catch {
-			// The stage is what the board shows; a claim that could not be written is not worth failing the op.
 		}
+	} catch {
+		// The stage is what the board shows; a claim that could not be written is not worth failing the op.
 	}
 	return textResult(text, details);
-}
-
-/**
- * Put this session on the board alongside its owner: it is handed queued issues
- * and replies too, which is what the user asked for. Needs the main session —
- * a subagent has no board of its own.
- */
-async function executeJoin(cwd: string, sessionId: string | undefined): Promise<AgentToolResult<IssuesToolDetails>> {
-	if (sessionId === undefined) {
-		throw new Error("`join` needs the main session's id; a subagent cannot take board work.");
-	}
-	await touchPresence(cwd, sessionId, { parallel: true });
-	const owner = await boardOwner(cwd);
-	const other = owner !== undefined && owner !== sessionId ? owner : undefined;
-	const text =
-		other === undefined
-			? "This session now takes board work in parallel (no other owner)"
-			: `This session now takes board work in parallel with ${other.slice(0, 6)}`;
-	return textResult(text, { op: "join", parallel: true, owner });
 }
 
 async function executeList(
@@ -307,6 +301,7 @@ async function executeList(
 		archived: params.archived,
 		severity: params.severity,
 		status: params.status,
+		stage: params.stage,
 		query: params.query,
 		limit: params.limit,
 	});
@@ -317,6 +312,7 @@ async function executeList(
 	if (params.category) scopeBits.push(`category=${params.category}`);
 	if (params.severity) scopeBits.push(`severity=${params.severity}`);
 	if (params.status) scopeBits.push(`status=${params.status}`);
+	if (params.stage) scopeBits.push(`stage=${params.stage}`);
 	if (params.query) scopeBits.push(`q=${JSON.stringify(params.query)}`);
 	const title = `# Issues (${summaries.length}, ${scopeBits.join(", ")})`;
 	const text = renderIssueListing(summaries, {
@@ -330,6 +326,7 @@ async function executeList(
 		archived: params.archived,
 		severity: params.severity,
 		status: params.status,
+		stage: params.stage,
 		query: params.query,
 		limit: params.limit,
 	};
@@ -362,8 +359,6 @@ export async function runIssuesOp(
 					return await executeStage(cwd, params, options.sessionId);
 				case "list":
 					return await executeList(cwd, params);
-				case "join":
-					return await executeJoin(cwd, options.sessionId);
 			}
 		} catch (error) {
 			return errorResult(params.op, error);

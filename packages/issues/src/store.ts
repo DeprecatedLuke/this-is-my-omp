@@ -99,6 +99,8 @@ export interface ListIssuesOptions {
 	archived?: boolean;
 	severity?: IssueSeverity;
 	status?: IssueStatus;
+	/** Board stage; `"none"` matches issues carrying no stage at all. */
+	stage?: IssueStage | "none";
 	/** Plain-text query; case-insensitive substring match against title + body + frontmatter values. */
 	query?: string;
 	/** Hard limit on returned records (post-sort). */
@@ -446,6 +448,7 @@ export async function listIssues(cwd: string, options: ListIssuesOptions = {}): 
 	const filtered = records.filter(record => {
 		if (options.severity && record.frontmatter.severity !== options.severity) return false;
 		if (options.status && record.frontmatter.status !== options.status) return false;
+		if (options.stage !== undefined && (record.frontmatter.stage ?? "none") !== options.stage) return false;
 		if (!query) return true;
 		if (record.frontmatter.title.toLowerCase().includes(query)) return true;
 		if (record.body.toLowerCase().includes(query)) return true;
@@ -987,10 +990,13 @@ export async function appendReplyHistory(
 }
 
 /**
- * The turn-end queue: issues with a pending reply, plus active `up-next` issues
- * the user queued on this machine — minus anything another session claimed.
- * Pending replies come first (oldest first) so a reply is never starved by plain
- * queued work.
+ * The turn-end queue: issues this session holds that have a pending reply or a
+ * local queue mark. Pending replies come first (oldest first) so a reply is never
+ * starved by plain queued work.
+ *
+ * Only a held issue is queued. An issue becomes a session's work when the user
+ * prompts that session to take it, so an unclaimed issue — and one whose claiming
+ * session is gone — is in no session's queue until one is prompted to claim it.
  *
  * A committed `stage: up-next` alone is not a queue entry: only a local queue
  * mark counts, so a cloned repo's stage cannot drive this machine's agents. A
@@ -1026,13 +1032,17 @@ export async function listQueuedIssues(root: string, sessionId: string): Promise
 		if (record && !replyOrder.has(id)) candidates.push(record);
 	}
 
-	const visible: IssueRecord[] = [];
+	const held: IssueRecord[] = [];
 	for (const record of candidates) {
-		const owner = await claimOwner(root, record.id);
-		// A claim held by a session that is gone is stale: the work is free again.
-		if (owner === undefined || owner === sessionId || (await claimIsStale(root, record.id))) visible.push(record);
+		// Another session's issue is not this session's work, and a free one waits
+		// for a prompt: only the claim makes an issue follow a session. A claim whose
+		// session stopped beating is stale — up for grabs, so nobody's work until a
+		// prompted session claims it again.
+		if ((await claimOwner(root, record.id)) !== sessionId) continue;
+		if (await claimIsStale(root, record.id)) continue;
+		held.push(record);
 	}
-	return visible.sort((a, b) => {
+	return held.sort((a, b) => {
 		const aAt = replyOrder.get(a.id);
 		const bAt = replyOrder.get(b.id);
 		if (aAt !== undefined && bAt !== undefined) return aAt.localeCompare(bAt) || a.id - b.id;
