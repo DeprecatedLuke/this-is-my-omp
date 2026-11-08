@@ -179,7 +179,9 @@ archives it, or the issue is gone. The hand-off writes `running` once; after tha
 the stage is already `running`, so later turn ends write nothing.
 
 Every queued issue is claimed for the session (`claims/<id>`), so parallel sessions
-in one checkout never take the same issue; a board move frees the claim, and
+in one checkout never take the same issue. A board move keeps the claim (only
+moving to Done frees it), so a requeue or a reply goes back to the session that
+holds the issue, and
 `session_shutdown` releases everything the session still holds. Only the board's
 owner — or a session the user joined with `{"op":"join"}` — is handed free work in
 the first place, and a claim left by a session that is gone is taken over instead

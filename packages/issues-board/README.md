@@ -103,9 +103,10 @@ returns to the active side of the tracker. The board never writes
 `stage: running` to mark work in flight.
 
 Every state change bumps `updated` and keeps every other frontmatter key and the
-body untouched. It also frees any claim on the issue, and queues the issue for
-this machine's agents only when the target is **Up next**; see
-[Replies](#replies).
+body untouched. The issue stays with the omp session that holds it (only Done
+frees the claim), so a requeue or a later reply goes back to that session, and the
+footer says which one. The issue is queued for this machine's agents only when
+the target is **Up next**; see [Replies](#replies).
 
 ## Keys
 
@@ -169,8 +170,9 @@ Rows with a pending reply show a `reply` badge, and the detail view lists each
 pending reply with the time it was queued. An issue claimed by an omp session
 shows `⧗` plus the first six characters of the session id (the detail view shows
 the whole id); claims are atomic, so two sessions cannot take the same issue.
-Changing an issue's state frees its claim, which is how a claim left behind by a
-dead session goes away.
+A reply or a state change goes to the session holding the issue while it is
+alive, and to the session that owns the board otherwise. A claim left behind by
+a dead session (no heartbeat for two minutes) is free again.
 
 At the end of a turn an agent loops on the issues queued for this machine until
 it moves them on; `needs-you` (feedback required) breaks the loop.

@@ -32,7 +32,16 @@ import {
 import { formatKeyHint, formatKeyHints } from "@oh-my-pi/pi-tui/key-hint-format";
 import { getMarkdownTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { inline, keyValueRows, pathLabel, severityTone, statusTone, type Tone } from "@this-is-my-omp/render";
-import { inboxDir, loadSeen, markSeen, type PendingReply, releaseClaim, setQueued } from "omp-issues/src/inbox";
+import {
+	claimIsStale,
+	claimOwner,
+	inboxDir,
+	loadSeen,
+	markSeen,
+	type PendingReply,
+	releaseClaim,
+	setQueued,
+} from "omp-issues/src/inbox";
 import { type IssueRecord, listIssueRecords, moveIssue, replyToIssue } from "omp-issues/src/store";
 import {
 	BOARD_STATES,
@@ -368,11 +377,16 @@ export class BoardComponent implements Component {
 		this.#moving = true;
 		try {
 			await moveIssue(this.#root, id, moveFor(state, record, doneStatus));
-			// Moving an issue is the user taking it back: the claim goes, and only a
-			// move to Up next queues it for this machine's agents.
-			await releaseClaim(this.#root, id);
+			// Done ends the work, so its claim goes. Any other move keeps the issue
+			// with the session that holds it: a requeue or a later reply goes back to
+			// the session with the context, never to whichever session owns the
+			// board, so two sessions don't end up on one issue. Only a move to Up
+			// next queues it for this machine's agents.
+			if (state === "done") await releaseClaim(this.#root, id);
 			await setQueued(this.#root, id, state === "up-next");
-			this.#status = { text: `#${id} → ${stateTitle(state)}`, tone: "success" };
+			const holder = state === "done" ? undefined : await this.#liveHolder(id);
+			const suffix = holder === undefined ? "" : ` · stays with session ${holder}`;
+			this.#status = { text: `#${id} → ${stateTitle(state)}${suffix}`, tone: "success" };
 			// The issue's group may have changed; the cursor stays at its row.
 			await this.#reload();
 		} catch (error) {
@@ -483,11 +497,20 @@ export class BoardComponent implements Component {
 			this.#replaceRecord(record);
 			this.#rememberReply(id, queued);
 			this.#rebuild();
-			this.#status = { text: `#${id} reply queued for the next prompt`, tone: "success" };
+			const holder = await this.#liveHolder(id);
+			const target = holder === undefined ? "the board owner" : `session ${holder}`;
+			this.#status = { text: `#${id} reply queued for ${target}`, tone: "success" };
 		} catch (error) {
 			this.#status = { text: `#${id}: ${error instanceof Error ? error.message : String(error)}`, tone: "error" };
 		}
 		this.#ui.requestRender();
+	}
+
+	/** Short id of the live session holding issue `id`, which is where its replies and requeues go. */
+	async #liveHolder(id: number): Promise<string | undefined> {
+		const holder = await claimOwner(this.#root, id);
+		if (holder === undefined || (await claimIsStale(this.#root, id))) return undefined;
+		return holder.slice(0, CLAIM_SHOWN_CHARS);
 	}
 
 	// -- input -----------------------------------------------------------------
