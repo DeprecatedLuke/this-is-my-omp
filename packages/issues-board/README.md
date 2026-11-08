@@ -114,7 +114,7 @@ this machine's agents only when the target is **Up next**; see
 | `↑` `↓` / `j` `k` | previous / next issue |
 | page keys | jump a page |
 | `g` `G` | first / last issue |
-| `1`–`7` | set the state (Needs you … Done) |
+| `1`–`7` | set the state; the list footer names each key's state in its colour |
 | `enter` | open the issue's detail view (fields, report link, markdown body) |
 | `r` | reply to the issue (list or detail view) |
 | `esc` | clear the filter, cancel a reply, or leave the detail view |

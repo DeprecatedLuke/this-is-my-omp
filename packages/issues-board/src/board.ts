@@ -59,6 +59,7 @@ import {
 	reportValue,
 	type SeenState,
 	stateGlyph,
+	stateIdTone,
 	stateLabel,
 	stateOf,
 	stateTitle,
@@ -76,8 +77,6 @@ const SEVERITY_WIDTH = 8;
 const MIN_TITLE_WIDTH = 18;
 /** Header lines: identity + per-group counts. */
 const HEADER_ROWS = 2;
-/** Footer lines: status/prompt + key hints. */
-const FOOTER_ROWS = 2;
 /** Detail value column: widest key (`category`, `severity`) + gap + the row's leading space. */
 const DETAIL_VALUE_INDENT = 11;
 /** Session-id prefix a row shows; the detail view has the whole id. */
@@ -693,7 +692,8 @@ export class BoardComponent implements Component {
 	}
 
 	#renderList(width: number, height: number): string[] {
-		const bodyHeight = Math.max(3, height - HEADER_ROWS - 1 - FOOTER_ROWS);
+		const footer = this.#footerLines(width, "list");
+		const bodyHeight = Math.max(3, height - HEADER_ROWS - 1 - footer.length);
 		this.#bodyHeight = bodyHeight;
 		const header = this.#headerLines(width);
 		const rule = truncateToWidth(theme.fg("dim", "─".repeat(width)), width, Ellipsis.Omit);
@@ -702,7 +702,6 @@ export class BoardComponent implements Component {
 		this.#listScroll.setHeight(bodyHeight);
 		if (selectedLine >= 0) this.#listScroll.setActiveRow(selectedLine, "nearest");
 		const body = this.#listScroll.render(width);
-		const footer = this.#footerLines(width, "list");
 		const out = [...header, rule, ...body, ...footer];
 		while (out.length < height) out.push("");
 		return out.slice(0, height);
@@ -801,7 +800,6 @@ export class BoardComponent implements Component {
 						`${formatKeyHint("e")} edit`,
 						"/ filter",
 						`${formatKeyHint("a")} done`,
-						"1-7 state",
 						`${formatKeyHint("q")} quit`,
 					].join(theme.fg("dim", " · "))
 				: [
@@ -811,7 +809,15 @@ export class BoardComponent implements Component {
 						`${formatKeyHint("e")} edit`,
 						`${formatKeyHint("q")} quit`,
 					].join(theme.fg("dim", " · "));
-		return [status, truncateToWidth(` ${theme.fg("dim", hints)}`, width, Ellipsis.Omit)];
+		const lines = [status, truncateToWidth(` ${theme.fg("dim", hints)}`, width, Ellipsis.Omit)];
+		if (view === "list") {
+			// What each state key sets, in the colour its chip will take.
+			const keys = BOARD_STATES.map(
+				(state, index) => `${formatKeyHint(String(index + 1))} ${theme.fg(stateIdTone(state.id), state.title)}`,
+			).join(theme.fg("dim", " · "));
+			lines.push(truncateToWidth(` ${keys}`, width, Ellipsis.Omit));
+		}
+		return lines;
 	}
 
 	#statusLine(width: number): string {
@@ -841,7 +847,8 @@ export class BoardComponent implements Component {
 	}
 
 	#renderDetail(width: number, height: number): string[] {
-		const bodyHeight = Math.max(3, height - 1 - FOOTER_ROWS);
+		const footer = this.#footerLines(width, "detail");
+		const bodyHeight = Math.max(3, height - 1 - footer.length);
 		const record = this.#detailRecord();
 		const title = record
 			? ` ${theme.bold(`#${record.id}`)} ${theme.bold(inline(record.frontmatter.title ?? "(untitled)"))}`
@@ -855,7 +862,7 @@ export class BoardComponent implements Component {
 		}
 		this.#detailScroll.setLines(body);
 		this.#detailScroll.setHeight(bodyHeight);
-		const lines = [header, ...this.#detailScroll.render(width), ...this.#footerLines(width, "detail")];
+		const lines = [header, ...this.#detailScroll.render(width), ...footer];
 		while (lines.length < height) lines.push("");
 		return lines.slice(0, height);
 	}

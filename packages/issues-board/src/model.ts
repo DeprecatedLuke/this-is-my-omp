@@ -93,11 +93,9 @@ export function stateLabel(record: IssueRecord, group: ListGroupId): string {
 	return closed ? `${base} · ${status}` : base;
 }
 
-/** Chip colour: every state its own hue; attention states are warm, settled ones recede. */
-export function stateTone(record: IssueRecord, group: ListGroupId): ThemeColor {
-	if (group === "finished") return "warning";
-	if (group === "done") return record.frontmatter.status === "fixed" ? "toolDiffAdded" : "muted";
-	switch (stateOf(record)) {
+/** Colour of a state, shared by the row chips and the footer's state keys. */
+export function stateIdTone(state: BoardStateId): ThemeColor {
+	switch (state) {
 		case "needs-you":
 			return "error";
 		case "up-next":
@@ -108,9 +106,18 @@ export function stateTone(record: IssueRecord, group: ListGroupId): ThemeColor {
 			return "syntaxFunction";
 		case "deferred":
 			return "dim";
+		case "done":
+			return "toolDiffAdded";
 		default:
 			return "syntaxType";
 	}
+}
+
+/** Chip colour: every state its own hue; attention states are warm, settled ones recede. */
+export function stateTone(record: IssueRecord, group: ListGroupId): ThemeColor {
+	if (group === "finished") return "warning";
+	if (group === "done") return record.frontmatter.status === "fixed" ? "toolDiffAdded" : "muted";
+	return stateIdTone(stateOf(record));
 }
 
 /** State glyph shown before the chip, in the chip's colour. */
