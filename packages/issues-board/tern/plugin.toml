@@ -1,0 +1,13 @@
+schema = 1
+id = "omp-board"
+name = "omp board"
+version = "0.1.0"
+description = "The omp issues board, drawn with Tern's own UI."
+host = "host.luau"
+window = "window.luau"
+styles = ["styles.css"]
+
+[[blocks]]
+id = "board"
+title = "Issues board"
+palette = true

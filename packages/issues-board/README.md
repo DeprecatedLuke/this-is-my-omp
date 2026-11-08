@@ -197,6 +197,110 @@ Without a configured url the raw value is shown.
 The detail view renders it as an OSC 8 hyperlink, so ctrl+click in herdr opens
 the report in the real browser. The board never spawns a browser itself.
 
+## API
+
+`omp-board api <verb> [args] --root <path>` is the same board as JSON, for front
+ends that draw it themselves (the Tern block) instead of running the TUI in a
+pane. `--root` is any path inside the checkout: the checkout is found by walking
+up to the nearest `.omp/issues`, exactly as the TUI does.
+
+One verb per process. stdout is exactly one JSON object and the exit status is
+`0`; any failure is exit `1` with `{"error": "<message>"}`.
+
+```sh
+omp-board api snapshot --root ~/src/myrepo
+omp-board api snapshot --filter deploy --all-done --root ~/src/myrepo
+omp-board api detail 12 --root ~/src/myrepo
+omp-board api seen 12 --root ~/src/myrepo
+omp-board api move 12 up-next --root ~/src/myrepo
+omp-board api move 12 done --status fixed --root ~/src/myrepo
+printf 'please check the staging log\n' | omp-board api reply 12 --root ~/src/myrepo
+omp-board api wait --since <fingerprint> --timeout-ms 25000 --root ~/src/myrepo
+```
+
+| Verb | What it does |
+|---|---|
+| `snapshot [--filter TEXT] [--all-done]` | the whole board: groups, rows, counts, states |
+| `wait --since FP [--timeout-ms N]` | block until the board changes, then the full snapshot |
+| `detail ID` | one issue: its row, frontmatter, pending replies and body |
+| `seen ID` | record that the user looked at the issue as of its `updated` |
+| `move ID STATE [--status fixed\|wontfix\|duplicate]` | the `1`–`7` keys; Done needs a terminal status |
+| `reply ID` | queue the text on stdin as the user's reply |
+
+A row is what the list draws:
+
+```json
+{"id":12,"title":"…","category":"runtime","severity":"high","group":"active",
+ "state":"up-next","label":"Up next","glyph":"▶","status":"open","stage":"up-next",
+ "archived":false,"updated":"2026-11-08T09:12:00.000Z","age":"3h","replies":0,
+ "claim":"01a1ac","report":"https://reports.example.com/r/myrepo/board-api",
+ "file":"/home/me/src/myrepo/.omp/issues/runtime/12-board-api.md"}
+```
+
+`group` is the list group the issue is in (`finished`, `active`, `deploy`,
+`done`), `state`/`label`/`glyph` are the chip, `claim` is the first six
+characters of the live session holding it (the detail view has the whole id in
+`claimFull`), and `report` is resolved through the `agent-reports` url like the
+TUI's link. `counts` and the rows are after `--filter`, like the TUI header, and
+`groups` lists non-empty groups only.
+
+`snapshot` and `wait` carry a `fingerprint` over everything that can change the
+board: every issue file's path, mtime and size (archived included), the inbox's
+replies, queue marks, claims and seen stamps, and which claims are still live —
+a claim goes stale on the clock alone, with no write to watch. `wait` returns the
+moment that hash moves off `--since` (filesystem events, plus a re-check every
+5 s), and `{"unchanged": true, "fingerprint": "…"}` at the timeout. It is
+independent of `--filter`, so one waiter can serve a board with a filter.
+
+`detail` does not mark the issue seen; `seen` is its own verb, which is how a
+front end moves a Finished issue to Done. `move` and `reply` return the same
+footer text the TUI shows (`#12 → Up next · stays with session aaaaaa`,
+`#12 reply queued for session aaaaaa`), and a move to the state an issue is
+already in writes nothing, exactly like the keypress.
+
+## Tern
+
+The board also ships as a [Tern](https://tern.sh) plugin (`tern/`, id `omp-board`),
+so it can be drawn with Tern's own tables, badges and markdown instead of running
+the TUI in a pane. The block is a client of [`omp-board api`](#api): every action
+goes through the same TypeScript code as the terminal board, so the two cannot
+drift apart.
+
+Link the plugin once — it needs `bun`, which `bin/omp-board` finds on `PATH`:
+
+```sh
+tern plugin link /path/to/this-is-my-omp/packages/issues-board/tern
+```
+
+Then **Open issues board** in the command palette (`ctrl+alt+i` by default; Tern
+drops a chord its preset already binds, so `ctrl+shift+i` — the inbox — and
+`ctrl+shift+b` — a browser block — are not used, and a keymap entry can bind
+`plugin.omp-board.open` to whatever you like). The block opens beside the focused
+pane for that pane's checkout, and `ctrl+click` on an `issues://<id>` link in any
+pane opens it on that issue's detail view.
+
+The block keeps the terminal board's behaviour: the same groups in the same order,
+the same state keys, the same footer texts, the same cursor rule (the cursor stays
+on its issue while other rows move, and keeps its row when the issue moves itself),
+and it reloads live through `omp-board api wait`.
+
+| Key | Action |
+|---|---|
+| `j` `k` / `↑` `↓` | previous / next issue |
+| page keys, `g` `G` | jump a page, first / last issue |
+| `enter` / `i` / double-click | open the detail view (a Finished issue is marked seen) |
+| `r` | reply to the issue; `enter` sends, `esc` cancels |
+| `e` | open the issue file in Tern |
+| `/` | filter by substring over title, category and body; `enter` keeps it, `esc` clears it |
+| `a` | toggle Done between the last 7 days and every archived issue |
+| `1`–`7` | set the state; `7` asks for `f` fixed, `w` wontfix or `d` duplicate |
+| `esc` | clear the filter, cancel a prompt, or leave the detail view |
+
+Right-clicking a row offers the same states, Done with each resolution, Reply,
+Open file and — when the issue has one — Open report. The dock names the last
+action's result in the API's own words, and the legend under the keys spells out
+`1 Needs you · 2 Up next · …` in each state's colour.
+
 ## herdr
 
 The board ships a herdr plugin (`herdr-plugin.toml`, id `omp.issues-board`,

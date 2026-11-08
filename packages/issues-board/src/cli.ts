@@ -21,7 +21,16 @@ export interface BoardArgs {
 /** Thrown for a malformed command line; `main` prints it with the usage line. */
 export class BoardUsageError extends Error {}
 
-export const USAGE = "usage: omp-board [path] [--issue <id>]";
+export const USAGE = `usage: omp-board [path] [--issue <id>]
+       omp-board api <verb> [args] --root <path>
+
+api verbs (one JSON object on stdout, exit 1 with {"error": ...} on failure):
+  snapshot [--filter TEXT] [--all-done]
+  wait --since <fingerprint> [--timeout-ms N] [--filter TEXT] [--all-done]
+  detail <id>
+  seen <id>
+  move <id> <state> [--status fixed|wontfix|duplicate]
+  reply <id>            (reply text on stdin)`;
 
 /** Parse `[path] [--issue <id>]`. */
 export function parseBoardArgs(argv: readonly string[]): BoardArgs {

@@ -3,13 +3,14 @@
  * rows sort, what a state key writes to the store, and where a `report://`
  * value points.
  *
- * Everything here but the loaders is pure — the TUI in `board.ts` owns
- * rendering and input, the store in `omp-issues` owns the files. Keeping the
- * mapping in one place means the states, the move semantics and the grouping
- * cannot drift.
+ * Everything here but the loaders is pure — the TUI in `board.ts` and the JSON
+ * API in `api.ts` own their front ends, the store in `omp-issues` owns the
+ * files. Keeping the mapping in one place means the states, the move semantics
+ * and the grouping cannot drift.
  */
-import { getPluginSettings } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/loader";
+
 import type { ThemeColor } from "@oh-my-pi/pi-tui/theme";
+import { getPluginsLockfile, getProjectPluginOverridesPath } from "@oh-my-pi/pi-utils";
 import { claimIsStale, claimOwner, listReplies, type PendingReply, type SeenState } from "omp-issues/src/inbox";
 import type { IssueMove, IssueRecord, IssueSeverity, IssueStatus } from "omp-issues/src/store";
 
@@ -258,6 +259,12 @@ export function isUnseen(record: IssueRecord, seen: SeenState): boolean {
 	return updated > Math.max(stampMs(seen.watermark), mark === undefined ? 0 : stampMs(mark));
 }
 
+/** Group an issue belongs in before the filter and the Done window apply. */
+export function groupOf(record: IssueRecord, seen: SeenState): ListGroupId {
+	if (!record.archived) return stateOf(record) === "awaiting-deploy" ? "deploy" : "active";
+	return isUnseen(record, seen) ? "finished" : "done";
+}
+
 export interface BuildListOptions {
 	/** Filter text; empty shows everything. */
 	filter?: string;
@@ -283,10 +290,9 @@ export function buildList(records: readonly IssueRecord[], options: BuildListOpt
 	const rows = new Map<ListGroupId, IssueRecord[]>(LIST_GROUPS.map(group => [group.id, []]));
 	for (const record of records) {
 		if (!matchesFilter(record, filter)) continue;
-		if (!record.archived) rows.get(stateOf(record) === "awaiting-deploy" ? "deploy" : "active")?.push(record);
-		else if (isUnseen(record, seen)) rows.get("finished")?.push(record);
-		else if (options.showAllDone === true || now - updatedMs(record) <= DONE_WINDOW_MS)
-			rows.get("done")?.push(record);
+		const group = groupOf(record, seen);
+		if (group === "done" && options.showAllDone !== true && now - updatedMs(record) > DONE_WINDOW_MS) continue;
+		rows.get(group)?.push(record);
 	}
 	return LIST_GROUPS.map(group => ({
 		group,
@@ -308,19 +314,34 @@ export interface BoardInbox {
 
 export const EMPTY_INBOX: BoardInbox = { replies: new Map(), claims: new Map() };
 
+/** Session-id prefix a row and the footer show; the detail view has the whole id. */
+export const CLAIM_SHOWN_CHARS = 6;
+
+/**
+ * Full id of the session holding issue `id`, or undefined when no session holds
+ * it or the holder stopped heartbeating: a dead session's claim is free, so the
+ * board never reports an issue as held by a session that is gone.
+ */
+export async function liveHolder(root: string, id: number): Promise<string | undefined> {
+	const holder = await claimOwner(root, id);
+	if (holder === undefined || (await claimIsStale(root, id))) return undefined;
+	return holder;
+}
+
+/** The prefix of a session id the board shows in rows and status lines. */
+export function shortSession(sessionId: string): string {
+	return sessionId.slice(0, CLAIM_SHOWN_CHARS);
+}
+
 /**
  * Read the inbox state for `records` from the checkout's issues inbox. A claim
  * whose session stopped heartbeating is free to the plugin, so it is left out
  * here too: the board never shows an issue as held by a session that is gone.
  */
 export async function loadInbox(root: string, records: readonly IssueRecord[]): Promise<BoardInbox> {
-	const liveHolder = async (id: number): Promise<string | undefined> => {
-		const holder = await claimOwner(root, id);
-		return holder === undefined || (await claimIsStale(root, id)) ? undefined : holder;
-	};
 	const [pending, holders] = await Promise.all([
 		listReplies(root),
-		Promise.all(records.map(async record => [record.id, await liveHolder(record.id)] as const)),
+		Promise.all(records.map(async record => [record.id, await liveHolder(root, record.id)] as const)),
 	]);
 	const replies = new Map<number, PendingReply[]>();
 	for (const reply of pending) {
@@ -346,17 +367,40 @@ export function claimedBy(inbox: BoardInbox, id: number): string | undefined {
 /** Plugin that serves report links. */
 export const REPORTS_PLUGIN = "agent-reports";
 
+/** `.settings[plugin]` of a plugin config file, or `{}` when it is absent or unreadable. */
+async function readPluginSettingsFile(file: string, plugin: string): Promise<Record<string, unknown>> {
+	try {
+		const settings = (await Bun.file(file).json())?.settings?.[plugin];
+		return typeof settings === "object" && settings !== null ? (settings as Record<string, unknown>) : {};
+	} catch {
+		return {};
+	}
+}
+
+/**
+ * Settings of `plugin`: its entries in omp's plugin lockfile, overridden by the
+ * checkout's `.omp/plugin-overrides.json`.
+ *
+ * This reads the two files omp's own `getPluginSettings` merges instead of
+ * importing it, because that module pulls in omp's whole config stack (some
+ * 250 ms of module work) and the board is a command that starts per keypress.
+ * The trade-off is that overrides in `.claude`/`.codex`/`.gemini` project dirs
+ * are not consulted; an omp plugin's settings live in `.omp`.
+ */
+export async function loadPluginSettings(plugin: string, root: string): Promise<Record<string, unknown>> {
+	const [global, project] = await Promise.all([
+		readPluginSettingsFile(getPluginsLockfile(), plugin),
+		readPluginSettingsFile(getProjectPluginOverridesPath(root), plugin),
+	]);
+	return { ...global, ...project };
+}
+
 /**
  * Base url of the report site from the `agent-reports` plugin settings, or
  * undefined when the user has not configured one.
  */
 export async function loadReportBaseUrl(root: string): Promise<string | undefined> {
-	let settings: Record<string, unknown>;
-	try {
-		settings = await getPluginSettings(REPORTS_PLUGIN, root);
-	} catch {
-		return undefined;
-	}
+	const settings = await loadPluginSettings(REPORTS_PLUGIN, root);
 	const url = typeof settings.url === "string" ? settings.url.trim().replace(/\/+$/, "") : "";
 	return url === "" ? undefined : url;
 }

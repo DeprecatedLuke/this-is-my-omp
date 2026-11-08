@@ -1,0 +1,11 @@
+/* omp-board: the issues board's own surface.
+   Tern draws the block with its table, badge and keycap looks; these rules only
+   tighten the sheet and keep the dock's legend quiet. */
+[data-surface="plugin.omp-board.board"] table {
+	font-variant-numeric: tabular-nums;
+}
+
+[data-surface="plugin.omp-board.board"] .sf-dock {
+	padding-top: 4px;
+	border-top: 1px solid rgba(128, 128, 128, 0.18);
+}

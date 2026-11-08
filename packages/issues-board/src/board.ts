@@ -32,17 +32,9 @@ import {
 import { formatKeyHint, formatKeyHints } from "@oh-my-pi/pi-tui/key-hint-format";
 import { getMarkdownTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { inline, keyValueRows, pathLabel, severityTone, statusTone, type Tone } from "@this-is-my-omp/render";
-import {
-	claimIsStale,
-	claimOwner,
-	inboxDir,
-	loadSeen,
-	markSeen,
-	type PendingReply,
-	releaseClaim,
-	setQueued,
-} from "omp-issues/src/inbox";
-import { type IssueRecord, listIssueRecords, moveIssue, replyToIssue } from "omp-issues/src/store";
+import { inboxDir, loadSeen, type PendingReply } from "omp-issues/src/inbox";
+import { type IssueRecord, listIssueRecords } from "omp-issues/src/store";
+import { markIssueSeen, moveIssueTo, replyToBoardIssue } from "./actions";
 import {
 	BOARD_STATES,
 	type BoardInbox,
@@ -61,17 +53,16 @@ import {
 	type ListGroupView,
 	loadInbox,
 	loadReportBaseUrl,
-	moveFor,
 	pendingReplies,
 	relativeAge,
 	reportUrl,
 	reportValue,
 	type SeenState,
+	shortSession,
 	stateGlyph,
 	stateIdTone,
 	stateLabel,
 	stateOf,
-	stateTitle,
 	stateTone,
 } from "./model";
 import { type IssuesWatcher, watchIssues } from "./watch";
@@ -88,8 +79,6 @@ const MIN_TITLE_WIDTH = 18;
 const HEADER_ROWS = 2;
 /** Detail value column: widest key (`category`, `severity`) + gap + the row's leading space. */
 const DETAIL_VALUE_INDENT = 11;
-/** Session-id prefix a row shows; the detail view has the whole id. */
-const CLAIM_SHOWN_CHARS = 6;
 /** How often the board re-reads so claims of sessions that went away drop off. */
 const LIVENESS_RELOAD_MS = 30_000;
 
@@ -386,17 +375,8 @@ export class BoardComponent implements Component {
 		if (!record || this.#moving) return;
 		this.#moving = true;
 		try {
-			await moveIssue(this.#root, id, moveFor(state, record, doneStatus));
-			// Done ends the work, so its claim goes. Any other move keeps the issue
-			// with the session that holds it: a requeue or a later reply goes back to
-			// the session with the context, and an issue no session holds waits for
-			// one to be prompted to take it. Only a move to Up next queues it for
-			// this machine's agents.
-			if (state === "done") await releaseClaim(this.#root, id);
-			await setQueued(this.#root, id, state === "up-next");
-			const holder = state === "done" ? undefined : await this.#liveHolder(id);
-			const suffix = holder === undefined ? "" : ` · stays with session ${holder}`;
-			this.#status = { text: `#${id} → ${stateTitle(state)}${suffix}`, tone: "success" };
+			const { message } = await moveIssueTo(this.#root, record, state, doneStatus);
+			this.#status = { text: message, tone: "success" };
 			// The issue's group may have changed; the cursor stays at its row.
 			await this.#reload();
 		} catch (error) {
@@ -423,10 +403,8 @@ export class BoardComponent implements Component {
 	 */
 	async #markSeen(entry: ListEntry): Promise<void> {
 		if (entry.group !== "finished" || !isUnseen(entry.record, this.#seen)) return;
-		const stamp = entry.record.frontmatter.updated;
-		if (stamp === undefined) return;
 		try {
-			await markSeen(this.#root, entry.record.id, stamp);
+			await markIssueSeen(this.#root, entry.record);
 		} catch (error) {
 			this.#setStatus("error", `#${entry.record.id}: ${error instanceof Error ? error.message : String(error)}`);
 			return;
@@ -503,27 +481,15 @@ export class BoardComponent implements Component {
 			return;
 		}
 		try {
-			const { record, reply: queued } = await replyToIssue(this.#root, id, reply);
+			const { record, reply: queued, message } = await replyToBoardIssue(this.#root, id, reply);
 			this.#replaceRecord(record);
 			this.#rememberReply(id, queued);
 			this.#rebuild();
-			const holder = await this.#liveHolder(id);
-			const text =
-				holder === undefined
-					? `#${id} reply waits until a session takes the issue`
-					: `#${id} reply queued for session ${holder}`;
-			this.#status = { text, tone: "success" };
+			this.#status = { text: message, tone: "success" };
 		} catch (error) {
 			this.#status = { text: `#${id}: ${error instanceof Error ? error.message : String(error)}`, tone: "error" };
 		}
 		this.#ui.requestRender();
-	}
-
-	/** Short id of the live session holding issue `id`, which is where its replies and requeues go. */
-	async #liveHolder(id: number): Promise<string | undefined> {
-		const holder = await claimOwner(this.#root, id);
-		if (holder === undefined || (await claimIsStale(this.#root, id))) return undefined;
-		return holder.slice(0, CLAIM_SHOWN_CHARS);
 	}
 
 	// -- input -----------------------------------------------------------------
@@ -820,7 +786,7 @@ export class BoardComponent implements Component {
 		const badges: string[] = [];
 		if (pendingReplies(this.#inbox, record.id).length > 0) badges.push(theme.fg("warning", "reply"));
 		const claim = claimedBy(this.#inbox, record.id);
-		if (claim !== undefined) badges.push(theme.fg("accent", `⧗ ${claim.slice(0, CLAIM_SHOWN_CHARS)}`));
+		if (claim !== undefined) badges.push(theme.fg("accent", `⧗ ${shortSession(claim)}`));
 		if (reportValue(record) !== undefined) badges.push(theme.fg("accent", "report"));
 		return badges.length === 0 ? "" : `${badges.join(theme.fg("dim", " · "))} `;
 	}
