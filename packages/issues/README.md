@@ -91,7 +91,9 @@ needs the user or waits on a deploy, set `stage: running` with the `stage` op
 before starting anything, use `running` rather than `in-progress` for unfinished
 work, and cite issues as `issues://<id>`. The in-progress reminder points the
 same way: an issue not finished this turn goes back to `open` with `stage:
-running` or `needs-you`.
+running` or `needs-you`. It only covers issues the session may take (ones it
+holds, or free ones when it owns the board), so no session is told to finish
+another session's work.
 
 ### One session owns the board
 

@@ -305,9 +305,12 @@ async function takeQueueReminder(
 
 /**
  * The in-progress reminder: unchanged in spirit, it fires while an issue is still
- * `status: in-progress` and spends one unit of the per-prompt budget. Only the
- * in-progress budget resets here — clearing the queue guard's stall count when no
- * issue is in progress would let a stalled queue loop forever.
+ * `status: in-progress` and spends one unit of the per-prompt budget. Like the
+ * hand-offs, it only covers issues this session may take — ones it holds, or free
+ * ones when it owns the board — so a session is never told to finish another
+ * session's work. Only the in-progress budget resets here — clearing the queue
+ * guard's stall count when no issue is in progress would let a stalled queue loop
+ * forever.
  */
 async function takeInProgressReminder(
 	pi: ExtensionAPI,
@@ -326,12 +329,25 @@ async function takeInProgressReminder(
 		});
 		return undefined;
 	}
-	if (inProgress.length === 0) {
+	const sessionId = ctx.sessionManager.getSessionId();
+	const gate: { allowed?: boolean } = {};
+	const mine: IssueSummary[] = [];
+	for (const issue of inProgress) {
+		try {
+			if (await mayTake(ctx.cwd, issue.id, sessionId, gate)) mine.push(issue);
+		} catch (error) {
+			pi.logger.debug("issues reminder: failed to check an in-progress issue's claim", {
+				id: issue.id,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+	if (mine.length === 0) {
 		budget.reset();
 		return undefined;
 	}
 	if (!budget.take(max)) return undefined;
-	return renderReminder(inProgress, budget.sent, max);
+	return renderReminder(mine, budget.sent, max);
 }
 
 export default function issuesPlugin(pi: ExtensionAPI): void {

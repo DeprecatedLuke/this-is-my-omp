@@ -285,6 +285,33 @@ describe("issues plugin: one session owns the board", () => {
 		expect(await claimOwner(tempDir, record.id)).toBe("session-b");
 	});
 
+	it("the in-progress reminder covers only issues the session may take, never one another live session holds", async () => {
+		const { owner, other } = await ownerAndOther();
+		const owners = await addIssue(tempDir, {
+			category: "infra",
+			title: "Split the test shards",
+			body: "B.",
+			status: "in-progress",
+		});
+		await owner.tool({ op: "stage", id: owners.record.id, stage: "running" });
+		expect(await claimOwner(tempDir, owners.record.id)).toBe("session-a");
+
+		expect(await other.turnEnd()).toBeUndefined();
+		expect(await owner.turnEnd()).toContain("Split the test shards");
+
+		const others = await addIssue(tempDir, {
+			category: "infra",
+			title: "Prune stale branches",
+			body: "B.",
+			status: "in-progress",
+		});
+		await other.tool({ op: "stage", id: others.record.id, stage: "running" });
+
+		const reminder = await other.turnEnd();
+		expect(reminder).toContain("Prune stale branches");
+		expect(reminder).not.toContain("Split the test shards");
+	});
+
 	it("the lease stays free while a session has no work it may take, even when work held by another live session is pending", async () => {
 		const idle = openSession("session-a");
 		const holder = openSession("session-b");
