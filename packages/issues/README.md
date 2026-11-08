@@ -135,16 +135,18 @@ mark counts, so a cloned repo's stage cannot drive the user's agents. A mark
 survives while its issue is active and either `up-next` or `running` — the
 hand-off marks it `running`, so the work stays in flight — and is pruned once the
 agent moves it to `needs-you`, `awaiting-deploy`, `deferred`, or no stage at all,
-archives it, or the issue is gone. The hand-off write bumps `updated` once; after
-that the stage is already `running`, so later turn ends write nothing and the
-stall guard still bounds the loop.
+archives it, or the issue is gone. The hand-off writes `running` once; after that
+the stage is already `running`, so later turn ends write nothing.
 
 Every queued issue is claimed for the session (`claims/<id>`), so parallel sessions
 in one checkout never take the same issue; a board move frees the claim, and
 `session_shutdown` releases everything the session still holds. The loop is bounded
-by the `remindersMax` setting: the queue's `id:updated` signature is compared with
-the last reminder, and an unchanged queue stops being reminded after that many
-stalls while any progress resets the count.
+by the `remindersMax` setting. Each reminder compares the queue's signature with
+the previous one; the signature is the queued issues' `id:stage:status` plus their
+pending board replies. An unchanged signature counts as a stall and stops the
+reminders after that many; a stage or status change, an issue joining or leaving,
+or a new reply resets the count. Body edits deliberately do not, so an agent that
+rewrites its issue every turn without handing it back cannot loop forever.
 
 ## `issues://` URLs
 

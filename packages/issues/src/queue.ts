@@ -11,6 +11,7 @@
  * stays a thin adapter.
  */
 import { prompt } from "@oh-my-pi/pi-utils";
+import type { PendingReply } from "./inbox";
 import queueTemplate from "./prompts/queue.md" with { type: "text" };
 import type { IssueReplies } from "./replies";
 import type { IssueRecord } from "./store";
@@ -18,9 +19,12 @@ import type { IssueRecord } from "./store";
 /**
  * Stall guard for the turn-end loop.
  *
- * The signature is the sorted `id:updated` set of the queue, so any real progress
- * — a stage change, a delivered reply, an archive — changes it and restores the
- * full allowance. An unchanged queue counts one stall per reminder.
+ * The signature (see {@link queueSignature}) only moves on progress the loop is
+ * about — an issue joining or leaving the queue, a stage or status change, a new
+ * board reply — and that restores the full allowance. Body edits do not count: a
+ * working agent that rewrites its issue every turn without handing it back must
+ * not keep the loop alive forever. An unchanged signature counts one stall per
+ * reminder.
  */
 export class QueueStallGuard {
 	#signature: string | undefined;
@@ -43,12 +47,18 @@ export class QueueStallGuard {
 	}
 }
 
-/** Signature of a queue: sorted `id:updated` pairs. */
-export function queueSignature(queue: readonly IssueRecord[]): string {
-	return queue
-		.map(record => `${record.id}:${record.frontmatter.updated ?? ""}`)
-		.sort()
-		.join("|");
+/**
+ * Signature of a queue: sorted `id:stage:status` entries plus the pending board
+ * replies for queued issues. `updated` is deliberately left out (see
+ * {@link QueueStallGuard}).
+ */
+export function queueSignature(queue: readonly IssueRecord[], pending: readonly PendingReply[]): string {
+	const ids = new Set(queue.map(record => record.id));
+	const issues = queue.map(
+		record => `${record.id}:${record.frontmatter.stage ?? ""}:${record.frontmatter.status ?? ""}`,
+	);
+	const replies = pending.filter(reply => ids.has(reply.id)).map(reply => `${reply.id}@${reply.file}`);
+	return [...issues, ...replies].sort().join("|");
 }
 
 /** Model-visible reminder listing the queued issues, with each pending reply verbatim. */

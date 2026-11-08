@@ -11,7 +11,7 @@ import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { listQueued, setQueued } from "../src/inbox";
 import issuesPlugin from "../src/index";
-import { addIssue, findIssueById, replyToIssue } from "../src/store";
+import { addIssue, findIssueById, replyToIssue, saveIssueContent } from "../src/store";
 import { useTempAgentDir } from "./agent-dir";
 
 useTempAgentDir();
@@ -109,5 +109,46 @@ describe("issues plugin: hand-off marks the issue running", () => {
 		expect(reminders).toBeLessThan(turns - 1);
 		// Still in flight: the issue keeps its queue mark.
 		expect([...(await listQueued(tempDir))]).toEqual([record.id]);
+	});
+
+	it("an agent that rewrites its running issue's body every turn still gets a bounded number of reminders", async () => {
+		const handlers = loadPlugin();
+		const sessionStop = handlers.get("session_stop")!;
+		const ctx = mainContext(tempDir);
+		const { record } = await addIssue(tempDir, {
+			category: "infra",
+			title: "Flaky deploy",
+			body: "B.",
+			extra: { stage: "up-next" },
+		});
+		await setQueued(tempDir, record.id, true);
+
+		// Before each turn end the agent appends a note through the issue file
+		// write path, on a later clock, so the body and `updated` change every
+		// turn while stage and status stay put.
+		const turns = 12;
+		let reminders = 0;
+		let stopped = false;
+		for (let turn = 1; turn <= turns; turn++) {
+			setSystemTime(at(turn));
+			const text = await Bun.file(record.filePath).text();
+			const { record: edited } = await saveIssueContent(tempDir, record.id, `${text}\nNote from turn ${turn}.\n`);
+			expect(edited.frontmatter.updated).toBe(at(turn).toISOString());
+			const result = await sessionStop({}, ctx);
+			if (result === undefined) {
+				stopped = true;
+				break;
+			}
+			reminders += 1;
+		}
+
+		expect(stopped).toBe(true);
+		expect(reminders).toBeGreaterThan(0);
+		expect((await findIssueById(tempDir, record.id))?.frontmatter.stage).toBe("running");
+		// Once stopped it stays stopped while the agent keeps churning the body.
+		setSystemTime(at(turns + 1));
+		const text = await Bun.file(record.filePath).text();
+		await saveIssueContent(tempDir, record.id, `${text}\nOne more note.\n`);
+		expect(await sessionStop({}, ctx)).toBeUndefined();
 	});
 });

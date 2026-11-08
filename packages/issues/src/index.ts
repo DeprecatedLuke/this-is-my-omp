@@ -107,10 +107,9 @@ async function recordDelivered(pi: ExtensionAPI, root: string, delivered: readon
 /**
  * Mark a handed-off issue `running`: the board shows Running the moment an agent
  * takes the work, without the agent spending a read plus a write on it. Only an
- * active issue that is not already `running` is written — a later turn end sees
- * `running` and writes nothing, so a hand-off cannot keep bumping `updated` and
- * the stall guard still bounds the queue loop. Best effort: a failed write is
- * logged and never blocks the prompt.
+ * active issue that is not already `running` is written, so a later turn end
+ * writes nothing. Best effort: a failed write is logged and never blocks the
+ * prompt.
  */
 async function markRunning(pi: ExtensionAPI, root: string, id: number): Promise<void> {
 	try {
@@ -213,8 +212,6 @@ async function takeQueueReminder(
 		return undefined;
 	}
 	if (queue.length === 0) return undefined;
-	// An unchanged queue is a stalled loop: remind a bounded number of times.
-	if (!guard.take(queueSignature(queue), max)) return undefined;
 
 	let pending: PendingReply[] = [];
 	try {
@@ -224,6 +221,8 @@ async function takeQueueReminder(
 			error: error instanceof Error ? error.message : String(error),
 		});
 	}
+	// An unchanged queue is a stalled loop: remind a bounded number of times.
+	if (!guard.take(queueSignature(queue, pending), max)) return undefined;
 	const byIssue = groupByIssue(pending);
 
 	const delivered: IssueReplies[] = [];
