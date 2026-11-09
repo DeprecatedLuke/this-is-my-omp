@@ -1,11 +1,31 @@
 /* omp-board: the issues board's own surface.
-   Tern draws the block with its table, badge and keycap looks; these rules only
-   tighten the sheet and keep the dock's legend quiet. */
-[data-surface="plugin.omp-board.board"] table {
+   Tern draws the block with its own table, badge and markdown looks; these rules
+   only tighten the sheet and keep the dock's legend quiet. */
+
+/* Tern's table is a div tree (`.sf-tbl`), not a <table>. */
+[data-surface="plugin.omp-board.board"] .sf-tbl {
 	font-variant-numeric: tabular-nums;
 }
 
 [data-surface="plugin.omp-board.board"] .sf-dock {
 	padding-top: 4px;
 	border-top: 1px solid rgba(128, 128, 128, 0.18);
+}
+
+/* Tern draws an inline code span as a padded chip. In issue prose the code is a
+   word inside a sentence, so that padding reads as a stray space next to the
+   punctuation around it: `( code )`, `code ,`, `code .`. The mono face and the
+   tint stay; only the horizontal padding goes. Fenced blocks are `.code`, not
+   `code`, so they are untouched. */
+[data-surface="plugin.omp-board.board"] .sf-md code {
+	padding-left: 0;
+	padding-right: 0;
+}
+
+/* A fenced block does not wrap, so a long line (a log line, a command) loses
+   everything past the pane's right edge, and nothing here scrolls sideways.
+   Wrapping keeps the text; the copy button still copies the source lines. */
+[data-surface="plugin.omp-board.board"] .sf-md .code {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
 }

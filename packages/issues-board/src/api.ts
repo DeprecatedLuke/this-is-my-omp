@@ -13,6 +13,7 @@
  *   seen ID                                   mark a Finished issue as looked at
  *   move ID STATE [--status fixed|…]          the `1`-`7` keys
  *   reply ID                                  queue a reply typed on stdin
+ *   report-url VALUE                          the site URL of a report:// value
  */
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
@@ -352,6 +353,25 @@ function resolveRoot(raw: string): string {
 	return root;
 }
 
+/**
+ * `report-url VALUE`: the site URL a `report://<project>/<slug>` value points
+ * at. Unlike every other verb this needs no tracker, so it takes the nearest
+ * checkout as a project-settings scope and falls back to the path itself.
+ */
+async function reportUrlVerb(options: ApiOptions): Promise<{ url: string }> {
+	requirePositionals(options, 1);
+	const value = options.positional[0];
+	if (value === undefined || value.trim() === "") throw new ApiUsageError("report-url needs a report value");
+	const start = path.resolve(options.root);
+	const base = await loadReportBaseUrl(findCheckoutRoot(start) ?? start);
+	if (base === undefined) {
+		throw new Error(
+			"no report site: set the agent-reports url with 'omp plugin config set agent-reports url https://…'",
+		);
+	}
+	return { url: reportUrl(value, base) };
+}
+
 /** `move ID STATE`: the store write of a `1`-`7` keypress. */
 async function moveVerb(root: string, options: ApiOptions): Promise<{ message: string }> {
 	const id = parseId(options.positional[0], "move");
@@ -463,30 +483,36 @@ export async function runApi(argv: readonly string[]): Promise<number> {
 	let code = 0;
 	try {
 		const options = parseApiArgs(argv);
-		const root = resolveRoot(options.root);
-		switch (options.verb) {
-			case "snapshot":
-				requirePositionals(options, 0);
-				result = await snapshotOf(root, options);
-				break;
-			case "wait":
-				requirePositionals(options, 0);
-				result = await waitVerb(root, options);
-				break;
-			case "detail":
-				result = await detailOf(root, parseId(options.positional[0], "detail"));
-				break;
-			case "seen":
-				result = await seenVerb(root, options);
-				break;
-			case "move":
-				result = await moveVerb(root, options);
-				break;
-			case "reply":
-				result = await replyVerb(root, options);
-				break;
-			default:
-				throw new ApiUsageError(`unknown verb '${options.verb}'`);
+		// `report-url` resolves a setting, not a tracker, so it works outside a
+		// checkout; every other verb needs one.
+		if (options.verb === "report-url") {
+			result = await reportUrlVerb(options);
+		} else {
+			const root = resolveRoot(options.root);
+			switch (options.verb) {
+				case "snapshot":
+					requirePositionals(options, 0);
+					result = await snapshotOf(root, options);
+					break;
+				case "wait":
+					requirePositionals(options, 0);
+					result = await waitVerb(root, options);
+					break;
+				case "detail":
+					result = await detailOf(root, parseId(options.positional[0], "detail"));
+					break;
+				case "seen":
+					result = await seenVerb(root, options);
+					break;
+				case "move":
+					result = await moveVerb(root, options);
+					break;
+				case "reply":
+					result = await replyVerb(root, options);
+					break;
+				default:
+					throw new ApiUsageError(`unknown verb '${options.verb}'`);
+			}
 		}
 	} catch (error) {
 		code = 1;

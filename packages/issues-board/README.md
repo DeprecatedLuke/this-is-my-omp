@@ -219,6 +219,7 @@ omp-board api move 12 up-next --root ~/src/myrepo
 omp-board api move 12 done --status fixed --root ~/src/myrepo
 printf 'please check the staging log\n' | omp-board api reply 12 --root ~/src/myrepo
 omp-board api wait --since <fingerprint> --timeout-ms 25000 --root ~/src/myrepo
+omp-board api report-url report://myrepo/board-api --root ~/src/myrepo
 ```
 
 | Verb | What it does |
@@ -229,6 +230,12 @@ omp-board api wait --since <fingerprint> --timeout-ms 25000 --root ~/src/myrepo
 | `seen ID` | record that the user looked at the issue as of its `updated` |
 | `move ID STATE [--status fixed\|wontfix\|duplicate]` | the `1`–`7` keys; Done needs a terminal status |
 | `reply ID` | queue the text on stdin as the user's reply |
+| `report-url VALUE` | the site URL a `report://<project>/<slug>` value points at |
+
+`report-url` is the one verb that needs no tracker: it resolves `VALUE` through
+the `agent-reports` url (`<url>/r/<project>/<slug>`) and answers `{"url": "…"}`,
+or `{"error": "no report site: …"}` when no url is configured. `--root` only
+scopes the project's settings overrides, so a path outside a checkout is fine.
 
 A row is what the list draws:
 
@@ -280,8 +287,16 @@ Then **Open issues board** in the command palette (`ctrl+alt+i` by default; Tern
 drops a chord its preset already binds, so `ctrl+shift+i` — the inbox — and
 `ctrl+shift+b` — a browser block — are not used, and a keymap entry can bind
 `plugin.omp-board.open` to whatever you like). The block opens beside the focused
-pane for that pane's checkout, and `ctrl+click` on an `issues://<id>` link in any
-pane opens it on that issue's detail view.
+pane for that pane's checkout.
+
+Link clicks are routed too:
+
+| Link | What happens |
+|---|---|
+| `issues://<id>` in any pane | the board for that pane's checkout, on that issue's detail — the one already open for that checkout is focused and reused, else a new one opens beside the pane |
+| `issues://<id>` inside the board's own body | that issue, in the same block |
+| `report://<project>/<slug>` anywhere | resolved with `omp-board api report-url` and opened in Tern's browser; a toast when no `agent-reports` url is configured |
+| `http(s):` | Tern's own handling |
 
 The block keeps the terminal board's behaviour: the same groups in the same order,
 the same state keys, the same footer texts, the same cursor rule (the cursor stays
@@ -290,8 +305,9 @@ and it reloads live through `omp-board api wait`.
 
 | Key | Action |
 |---|---|
-| `j` `k` / `↑` `↓` | previous / next issue |
-| page keys, `g` `G` | jump a page, first / last issue |
+| `j` `k` / `↑` `↓` | previous / next issue; in the detail, scroll a line |
+| `pgup` `pgdn` | a page of issues; in the detail, a page of the body |
+| `home` `end`, `g` `G` | first / last issue; in the detail, the top / bottom of the body |
 | `enter` / `i` / double-click | open the detail view (a Finished issue is marked seen) |
 | `r` | reply to the issue; `enter` sends, `esc` cancels |
 | `e` | open the issue file in Tern |
@@ -299,6 +315,10 @@ and it reloads live through `omp-board api wait`.
 | `a` | toggle Done between the last 7 days and every archived issue |
 | `1`–`7` | set the state; `7` asks for `f` fixed, `w` wontfix or `d` duplicate |
 | `esc` | clear the filter, cancel a prompt, or leave the detail view |
+
+The detail body is drawn as a window the plugin scrolls itself (Tern's surface
+scrolls on the wheel, but a block cannot scroll it from a key: `cx:frame` has no
+scroll op and `BlockCx` has no command call), and the dock shows `line N of M`.
 
 Right-clicking a row offers the same states, Done with each resolution, Reply,
 Open file and — when the issue has one — Open report. The dock names the last
