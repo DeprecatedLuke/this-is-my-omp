@@ -305,9 +305,9 @@ and it reloads live through `omp-board api wait`.
 
 | Key | Action |
 |---|---|
-| `j` `k` / `↑` `↓` | previous / next issue; in the detail, scroll a line |
-| `pgup` `pgdn` | a page of issues; in the detail, a page of the body |
-| `home` `end`, `g` `G` | first / last issue; in the detail, the top / bottom of the body |
+| `j` `k` / `↑` `↓` | previous / next issue |
+| `pgup` `pgdn` | a page of issues |
+| `home` `end`, `g` `G` | first / last issue |
 | `enter` / `i` / double-click | open the detail view (a Finished issue is marked seen) |
 | `r` | reply to the issue; `enter` sends, `esc` cancels |
 | `e` | open the issue file in Tern |
@@ -316,9 +316,14 @@ and it reloads live through `omp-board api wait`.
 | `1`–`7` | set the state; `7` asks for `f` fixed, `w` wontfix or `d` duplicate |
 | `esc` | clear the filter, cancel a prompt, or leave the detail view |
 
-The detail body is drawn as a window the plugin scrolls itself (Tern's surface
-scrolls on the wheel, but a block cannot scroll it from a key: `cx:frame` has no
-scroll op and `BlockCx` has no command call), and the dock shows `line N of M`.
+The detail view is one node and Tern's own surface scrolls it — one scrollbar, the
+wheel. It has no scroll keys: Tern gives a plugin block no way to scroll that
+surface from the keyboard. `cx:frame` has no scroll op (`{op = "scroll"}`,
+`{op = "scroll_by"}` are accepted and do nothing), `BlockCx` has no command call,
+and the window's `scroll_line_up` … `scroll_bottom` actions scroll a terminal's
+scrollback but not a block's surface (all six run without error and move nothing).
+Until Tern exposes that, the wheel is the only way, and the block does not draw a
+scroll position of its own.
 
 Right-clicking a row offers the same states, Done with each resolution, Reply,
 Open file and — when the issue has one — Open report. The dock names the last

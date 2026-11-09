@@ -19,6 +19,9 @@ local SNAPSHOT_TIMEOUT_MS = 15000
 local WAIT_TIMEOUT_MS = 25000
 local WAIT_PROCESS_TIMEOUT_MS = WAIT_TIMEOUT_MS + 10000
 local FILTER_DEBOUNCE_MS = 150
+-- Issues a page key jumps. Tern reports no pane height to a block (`cx.rows` is
+-- the size the block was created at and never changes), so this is a fixed step.
+local PAGE_STEP = 16
 
 -- Style token per board state: every state its own tone, attention states warm.
 local STATE_TONES = {
@@ -299,8 +302,6 @@ local function openDetail(state)
 	state.view = "detail"
 	state.detail = nil
 	state.detailError = nil
-	state.scroll = 0
-	state.scrollMax = 0
 	loadDetail(state)
 	-- Opening a Finished issue is how the user says they have dealt with it.
 	if row.group == "finished" then
@@ -576,71 +577,8 @@ local function stateForKey(state, key)
 	return nil
 end
 
--- Scrolling the detail body ------------------------------------------------
+-- Clickable links ---------------------------------------------------------
 --
--- A block cannot scroll Tern's surface from a key press: `cx:frame` has no
--- scroll op (tried `{op = "scroll", by = 5}`, `{op = "scroll", top = 200}` and
--- `{op = "scroll_by", lines = 5}` — all accepted, none moved anything),
--- BlockCx has no command call, and the pane scroll actions (`scroll_page_down`,
--- `scroll_top`, …) are window-level actions a block never sees. Tern also
--- reports every plugin block as 80x24 — `cx.cols`/`cx.rows` never change and
--- `resize` never fires — so the window cannot be sized from the pane either.
---
--- What works without a size: draw the body from the scroll line to the end of
--- the body and let the pane clip it. The keys move that first line, so `j`
--- shifts the text by a line, a page key by PAGE_LINES, and the wheel still
--- scrolls the overflow.
---
--- The cut is made on the markdown source, so it is repaired where a construct
--- cannot start mid-way: a fence gets its opening line back, a table its header
--- and separator, and a fence the window ends inside gets closed.
-
-local FENCE = "```"
--- Lines a page key moves, and the most the window ever draws in one go.
-local PAGE_LINES = 16
-local WINDOW_LINES = 400
-
-local function bodyLines(text)
-	local lines = {}
-	for line in (text .. "\n"):gmatch("([^\n]*)\n") do
-		lines[#lines + 1] = line
-	end
-	return lines
-end
-
--- Kind of each source line, so the window knows what it may cut.
-local function classifyLines(lines)
-	local kinds = {}
-	local inFence = false
-	for i, line in ipairs(lines) do
-		local body = line:gsub("^%s*", "")
-		local kind
-		if inFence then
-			if body:sub(1, 3) == FENCE then
-				kind = "fence_close"
-				inFence = false
-			else
-				kind = "fence_body"
-			end
-		elseif body:sub(1, 3) == FENCE then
-			kind = "fence_open"
-			inFence = true
-		elseif body == "" then
-			kind = "blank"
-		elseif body:sub(1, 1) == "|" then
-			kind = "table"
-		elseif body:match("^#") then
-			kind = "heading"
-		elseif body:match("^%d+[.)]%s") ~= nil or body:match("^[-*+]%s") ~= nil then
-			kind = "item"
-		else
-			kind = "para"
-		end
-		kinds[i] = kind
-	end
-	return kinds
-end
-
 -- Tern's markdown makes only `http(s)` targets clickable, so an `issues://` or
 -- `report://` link in a body would be dead text. Both are rewritten to a host
 -- nobody can own, which `route.link` maps back to the real scheme; the link text
@@ -651,57 +589,6 @@ local function linkable(text)
 	local out = text:gsub("%]%(issues://(%d+)%)", "](" .. SENTINEL .. "/issues/%1)")
 	out = out:gsub("%]%(report://([%w%-_%./]+)%)", "](" .. SENTINEL .. "/report/%1)")
 	return out
-end
-
--- The window of `body` to draw; also keeps the scroll state it was drawn at.
-local function bodyWindow(state, body)
-	local lines = bodyLines(body)
-	local kinds = classifyLines(lines)
-	local total = #lines
-	local maxScroll = math.max(0, total - PAGE_LINES)
-	local scroll = math.min(math.max(state.scroll or 0, 0), maxScroll)
-	state.scroll = scroll
-	state.scrollMax = maxScroll
-	state.scrollTotal = total
-
-	local start = math.max(1, math.min(scroll + 1, math.max(total, 1)))
-	local out = {}
-	local kind = kinds[start]
-	if kind == "fence_body" or kind == "fence_close" then
-		-- Re-open the fence so the first lines still render as code.
-		local open = start
-		while open > 1 and kinds[open] ~= "fence_open" do
-			open = open - 1
-		end
-		if kinds[open] == "fence_open" then
-			out[#out + 1] = lines[open]
-		end
-	elseif kind == "table" then
-		-- Re-state the table's header and separator so the rows are still a table.
-		local first = start
-		while first > 1 and kinds[first - 1] == "table" do
-			first = first - 1
-		end
-		if first + 1 <= total then
-			out[#out + 1] = lines[first]
-			out[#out + 1] = lines[first + 1]
-		end
-	end
-
-	local stop = math.min(total, start + WINDOW_LINES - 1)
-	for index = start, stop do
-		out[#out + 1] = lines[index]
-	end
-	-- Close a fence the window cut in half, or the rest of the body renders as code.
-	if stop >= start and (kinds[stop] == "fence_body" or kinds[stop] == "fence_open") then
-		out[#out + 1] = FENCE
-	end
-	return linkable(table.concat(out, "\n"))
-end
-
-local function scrollDetail(state, delta)
-	state.scroll = math.max(0, (state.scroll or 0) + delta)
-	render(state)
 end
 
 -- Keys --------------------------------------------------------------------
@@ -861,38 +748,11 @@ local function handleKey(state, key)
 	end
 
 	if state.view == "detail" then
-		-- The detail body is drawn as a window, so these keys move it.
-		if name == "j" or name == "down" then
-			scrollDetail(state, 1)
-			return true
-		end
-		if name == "k" or name == "up" then
-			scrollDetail(state, -1)
-			return true
-		end
-		if name == "page_down" then
-			scrollDetail(state, PAGE_LINES)
-			return true
-		end
-		if name == "page_up" then
-			scrollDetail(state, -PAGE_LINES)
-			return true
-		end
-		if name == "home" then
-			state.scroll = 0
-			render(state)
-			return true
-		end
-		if name == "end" then
-			state.scroll = state.scrollMax or 0
-			render(state)
-			return true
-		end
-		if name == "g" then
-			state.scroll = key.shift and (state.scrollMax or 0) or 0
-			render(state)
-			return true
-		end
+		-- The detail body is one long node and Tern's surface scrolls it, but a
+		-- block cannot scroll that surface: `cx:frame` has no scroll op, BlockCx
+		-- has no command call, and the window's `scroll_*` actions are no-ops on
+		-- a block's surface (they scroll a terminal's scrollback, not this). So
+		-- these keys are left to Tern, which currently means the wheel.
 		return false
 	end
 
@@ -918,11 +778,11 @@ local function handleKey(state, key)
 		return true
 	end
 	if name == "page_down" then
-		moveSelection(state, PAGE_LINES)
+		moveSelection(state, PAGE_STEP)
 		return true
 	end
 	if name == "page_up" then
-		moveSelection(state, -PAGE_LINES)
+		moveSelection(state, -PAGE_STEP)
 		return true
 	end
 	if name == "enter" or name == "i" then
@@ -1141,7 +1001,7 @@ local function detailNode(state)
 		children[#children + 1] = ui.col(lines)
 	end
 	children[#children + 1] = ui.rule("body")
-	children[#children + 1] = ui.md(bodyWindow(state, tostring(detail.body or "")))
+	children[#children + 1] = ui.md(linkable(tostring(detail.body or "")))
 	return ui.col(children)
 end
 
@@ -1157,10 +1017,9 @@ local LIST_HINTS = {
 	{ keys = { "esc" }, label = "back" },
 }
 
+-- Nothing scrolls the detail from a key (see the detail branch of `handleKey`),
+-- so the hints name no scroll keys.
 local DETAIL_HINTS = {
-	{ keys = { "j", "k" }, label = "scroll" },
-	{ keys = { "pgup", "pgdn" }, label = "page" },
-	{ keys = { "g", "G" }, label = "ends" },
 	{ keys = { "r" }, label = "reply" },
 	{ keys = { "e" }, label = "edit" },
 	{ keys = { "1–7" }, label = "state" },
@@ -1222,13 +1081,6 @@ local function dockNode(state)
 		children[#children + 1] = ui.text({ ui.span(tostring(state.status.text), state.status.tone) })
 	end
 	children[#children + 1] = hintsNode(state)
-	if state.view == "detail" and (state.scrollTotal or 0) > 0 then
-		-- Where the body window sits, so a key that moved it is visible even when
-		-- the text it moved to looks alike.
-		children[#children + 1] = ui.text({
-			ui.span("line " .. tostring((state.scroll or 0) + 1) .. " of " .. tostring(state.scrollTotal), "muted"),
-		})
-	end
 	children[#children + 1] = legendNode(state)
 	return ui.col(children)
 end
@@ -1253,9 +1105,6 @@ tern.block.define("board", {
 			mode = "none",
 			input = "",
 			view = "list",
-			scroll = 0,
-			scrollMax = 0,
-			scrollTotal = 0,
 			gen = 0,
 			alive = true,
 			loading = true,
