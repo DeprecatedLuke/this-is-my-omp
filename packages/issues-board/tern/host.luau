@@ -19,6 +19,9 @@ local SNAPSHOT_TIMEOUT_MS = 15000
 local WAIT_TIMEOUT_MS = 25000
 local WAIT_PROCESS_TIMEOUT_MS = WAIT_TIMEOUT_MS + 10000
 local FILTER_DEBOUNCE_MS = 150
+-- Issues a page key jumps. Tern reports no pane height to a block (`cx.rows` is
+-- the size the block was created at and never changes), so this is a fixed step.
+local PAGE_STEP = 16
 
 -- Style token per board state: every state its own tone, attention states warm.
 local STATE_TONES = {
@@ -53,23 +56,25 @@ local FALLBACK_STATES = {
 	{ key = "7", id = "done", title = "Done" },
 }
 
--- The lowest priority hides first when the pane is narrow. The id and the title
--- carry the top priority and are never dropped; the state icon leads the title
--- cell (see `rowCells`), so a row always says which issue it is and where it
--- stands. The title is the only column that grows (so the table fills the pane)
--- and the only one that truncates. As the pane narrows the rest go in the order
--- the board can best afford to lose them: category, age, severity, then the
--- state's label (the icon's tooltip still names the state).
+-- The lowest priority hides first when the pane is narrow. The issue cell (state
+-- icon, `#id`, title and badges; see `rowCells`) carries the top priority and is
+-- never dropped, so a row always says which issue it is and where it stands. It
+-- is the only column that grows (so the table fills the pane) and the only one
+-- that truncates. The rest follow in the terminal board's order and go as the
+-- pane narrows in the order the board can best afford to lose them: category,
+-- age, severity, then the state's label (the icon's tooltip still names the
+-- state). The heads are hidden by the plugin's CSS, as the terminal board has
+-- none.
 local COLUMNS = {
 	{ id = "title", head = "Issue", grow = 1, truncate = "end", priority = 20 },
 	{ id = "state", head = "State", priority = 4 },
 	{ id = "severity", head = "Severity", priority = 3 },
-	{ id = "age", head = "Age", align = "end", priority = 2 },
 	{ id = "category", head = "Category", priority = 1 },
+	{ id = "age", head = "Age", align = "end", priority = 2 },
 }
 
 -- Tern's named icon per state (12px, in the row's tone), instead of the TUI's
--- text glyphs, which Tern's sans face draws unevenly (`||`, a half-filled `◐`).
+-- text glyphs, which Tern draws unevenly (`||`, a half-filled `◐`).
 -- Every name was checked against Tern's icon registry (`tern.chrome.program_icon`
 -- rejects unknown names) and seen rendered in a row.
 local STATE_ICONS = {
@@ -325,8 +330,6 @@ local function openDetail(state)
 	state.view = "detail"
 	state.detail = nil
 	state.detailError = nil
-	state.scroll = 0
-	state.scrollMax = 0
 	loadDetail(state)
 	-- Opening a Finished issue is how the user says they have dealt with it.
 	if row.group == "finished" then
@@ -602,71 +605,8 @@ local function stateForKey(state, key)
 	return nil
 end
 
--- Scrolling the detail body ------------------------------------------------
+-- Clickable links ---------------------------------------------------------
 --
--- A block cannot scroll Tern's surface from a key press: `cx:frame` has no
--- scroll op (tried `{op = "scroll", by = 5}`, `{op = "scroll", top = 200}` and
--- `{op = "scroll_by", lines = 5}` — all accepted, none moved anything),
--- BlockCx has no command call, and the pane scroll actions (`scroll_page_down`,
--- `scroll_top`, …) are window-level actions a block never sees. Tern also
--- reports every plugin block as 80x24 — `cx.cols`/`cx.rows` never change and
--- `resize` never fires — so the window cannot be sized from the pane either.
---
--- What works without a size: draw the body from the scroll line to the end of
--- the body and let the pane clip it. The keys move that first line, so `j`
--- shifts the text by a line, a page key by PAGE_LINES, and the wheel still
--- scrolls the overflow.
---
--- The cut is made on the markdown source, so it is repaired where a construct
--- cannot start mid-way: a fence gets its opening line back, a table its header
--- and separator, and a fence the window ends inside gets closed.
-
-local FENCE = "```"
--- Lines a page key moves, and the most the window ever draws in one go.
-local PAGE_LINES = 16
-local WINDOW_LINES = 400
-
-local function bodyLines(text)
-	local lines = {}
-	for line in (text .. "\n"):gmatch("([^\n]*)\n") do
-		lines[#lines + 1] = line
-	end
-	return lines
-end
-
--- Kind of each source line, so the window knows what it may cut.
-local function classifyLines(lines)
-	local kinds = {}
-	local inFence = false
-	for i, line in ipairs(lines) do
-		local body = line:gsub("^%s*", "")
-		local kind
-		if inFence then
-			if body:sub(1, 3) == FENCE then
-				kind = "fence_close"
-				inFence = false
-			else
-				kind = "fence_body"
-			end
-		elseif body:sub(1, 3) == FENCE then
-			kind = "fence_open"
-			inFence = true
-		elseif body == "" then
-			kind = "blank"
-		elseif body:sub(1, 1) == "|" then
-			kind = "table"
-		elseif body:match("^#") then
-			kind = "heading"
-		elseif body:match("^%d+[.)]%s") ~= nil or body:match("^[-*+]%s") ~= nil then
-			kind = "item"
-		else
-			kind = "para"
-		end
-		kinds[i] = kind
-	end
-	return kinds
-end
-
 -- Tern's markdown makes only `http(s)` targets clickable, so an `issues://` or
 -- `report://` link in a body would be dead text. Both are rewritten to a host
 -- nobody can own, which `route.link` maps back to the real scheme; the link text
@@ -677,57 +617,6 @@ local function linkable(text)
 	local out = text:gsub("%]%(issues://(%d+)%)", "](" .. SENTINEL .. "/issues/%1)")
 	out = out:gsub("%]%(report://([%w%-_%./]+)%)", "](" .. SENTINEL .. "/report/%1)")
 	return out
-end
-
--- The window of `body` to draw; also keeps the scroll state it was drawn at.
-local function bodyWindow(state, body)
-	local lines = bodyLines(body)
-	local kinds = classifyLines(lines)
-	local total = #lines
-	local maxScroll = math.max(0, total - PAGE_LINES)
-	local scroll = math.min(math.max(state.scroll or 0, 0), maxScroll)
-	state.scroll = scroll
-	state.scrollMax = maxScroll
-	state.scrollTotal = total
-
-	local start = math.max(1, math.min(scroll + 1, math.max(total, 1)))
-	local out = {}
-	local kind = kinds[start]
-	if kind == "fence_body" or kind == "fence_close" then
-		-- Re-open the fence so the first lines still render as code.
-		local open = start
-		while open > 1 and kinds[open] ~= "fence_open" do
-			open = open - 1
-		end
-		if kinds[open] == "fence_open" then
-			out[#out + 1] = lines[open]
-		end
-	elseif kind == "table" then
-		-- Re-state the table's header and separator so the rows are still a table.
-		local first = start
-		while first > 1 and kinds[first - 1] == "table" do
-			first = first - 1
-		end
-		if first + 1 <= total then
-			out[#out + 1] = lines[first]
-			out[#out + 1] = lines[first + 1]
-		end
-	end
-
-	local stop = math.min(total, start + WINDOW_LINES - 1)
-	for index = start, stop do
-		out[#out + 1] = lines[index]
-	end
-	-- Close a fence the window cut in half, or the rest of the body renders as code.
-	if stop >= start and (kinds[stop] == "fence_body" or kinds[stop] == "fence_open") then
-		out[#out + 1] = FENCE
-	end
-	return linkable(table.concat(out, "\n"))
-end
-
-local function scrollDetail(state, delta)
-	state.scroll = math.max(0, (state.scroll or 0) + delta)
-	render(state)
 end
 
 -- Keys --------------------------------------------------------------------
@@ -887,38 +776,11 @@ local function handleKey(state, key)
 	end
 
 	if state.view == "detail" then
-		-- The detail body is drawn as a window, so these keys move it.
-		if name == "j" or name == "down" then
-			scrollDetail(state, 1)
-			return true
-		end
-		if name == "k" or name == "up" then
-			scrollDetail(state, -1)
-			return true
-		end
-		if name == "page_down" then
-			scrollDetail(state, PAGE_LINES)
-			return true
-		end
-		if name == "page_up" then
-			scrollDetail(state, -PAGE_LINES)
-			return true
-		end
-		if name == "home" then
-			state.scroll = 0
-			render(state)
-			return true
-		end
-		if name == "end" then
-			state.scroll = state.scrollMax or 0
-			render(state)
-			return true
-		end
-		if name == "g" then
-			state.scroll = key.shift and (state.scrollMax or 0) or 0
-			render(state)
-			return true
-		end
+		-- The detail body is one long node and Tern's surface scrolls it, but a
+		-- block cannot scroll that surface: `cx:frame` has no scroll op, BlockCx
+		-- has no command call, and the window's `scroll_*` actions are no-ops on
+		-- a block's surface (they scroll a terminal's scrollback, not this). So
+		-- these keys are left to Tern, which currently means the wheel.
 		return false
 	end
 
@@ -944,11 +806,11 @@ local function handleKey(state, key)
 		return true
 	end
 	if name == "page_down" then
-		moveSelection(state, PAGE_LINES)
+		moveSelection(state, PAGE_STEP)
 		return true
 	end
 	if name == "page_up" then
-		moveSelection(state, -PAGE_LINES)
+		moveSelection(state, -PAGE_STEP)
 		return true
 	end
 	if name == "enter" or name == "i" then
@@ -970,117 +832,169 @@ end
 
 -- Views -------------------------------------------------------------------
 
+-- The terminal board's two header lines: who and where, with the filter and
+-- the Done range on the right of the first; each group's count on the second.
 local function headerNode(state)
 	local snap = state.snap
 	local repo = snap ~= nil and snap.repo or baseName(state.path)
 	local root = snap ~= nil and snap.root or state.path
-	local children = {
-		ui.text({ ui.span(tostring(repo), "strong"), ui.span("  " .. tostring(root), "muted") }),
-	}
-
 	local counts = snap ~= nil and snap.counts or {}
+
+	local identity = {
+		ui.span("▌ ", "accent"),
+		ui.span("omp-board", "strong"),
+		ui.span(" · ", "muted"),
+		ui.span(tostring(repo), "strong"),
+		ui.span(" " .. tostring(root), "muted"),
+	}
+	local chips = {}
+	if state.filter ~= "" then
+		chips[#chips + 1] = ui.span("/" .. state.filter, "accent")
+	end
+	if state.allDone then
+		chips[#chips + 1] = ui.span("done: all", "warning")
+	end
+	if #chips == 0 then
+		local total = 0
+		for _, group in ipairs(GROUP_ORDER) do
+			total = total + (counts[group.id] or 0)
+		end
+		chips[#chips + 1] = ui.span(tostring(total) .. (total == 1 and " issue" or " issues"), "muted")
+	end
+	identity[#identity + 1] = ui.span("   ", "muted")
+	for i, chip in ipairs(chips) do
+		if i > 1 then
+			identity[#identity + 1] = ui.span(" · ", "muted")
+		end
+		identity[#identity + 1] = chip
+	end
+
 	local countSpans = {}
 	for i, group in ipairs(GROUP_ORDER) do
 		if i > 1 then
 			countSpans[#countSpans + 1] = ui.span(" · ", "muted")
 		end
-		countSpans[#countSpans + 1] = ui.span(group.title .. " ", "muted")
-		countSpans[#countSpans + 1] = ui.span(tostring(counts[group.id] or 0), GROUP_TONES[group.id] or "")
+		countSpans[#countSpans + 1] = ui.span(group.title .. " ", GROUP_TONES[group.id] or "")
+		countSpans[#countSpans + 1] = ui.span(tostring(counts[group.id] or 0), "strong")
 	end
-
-	local chips = { ui.text(countSpans) }
-	if state.filter ~= "" then
-		chips[#chips + 1] = ui.badge("filter: " .. state.filter, "accent")
-	end
-	if state.allDone then
-		chips[#chips + 1] = ui.badge("all done", "info")
-	end
-	children[#children + 1] = ui.row(chips)
-	return ui.col(children)
+	return ui.col({ ui.text(identity), ui.text(countSpans) })
 end
 
--- The row's badges ride in the title cell, right after the text, so they cost no
--- column of their own and the title keeps the whole spare width.
+-- The row's badges ride in the title cell, right after the text, as the
+-- terminal board's coloured words: they cost no column of their own and the
+-- title keeps the whole spare width. A Done title recedes, as in the terminal.
 local function titleSpans(row)
-	local spans = { ui.span(tostring(row.title or "")) }
-	local function chip(text, tone)
-		if #spans > 0 then
-			spans[#spans + 1] = ui.span("  ", "muted")
-		end
-		spans[#spans + 1] = ui.span(text, tone)
-	end
+	local settled = row.group == "done"
+	local spans = { ui.span(tostring(row.title or ""), settled and "muted" or nil) }
+	local badges = {}
 	if (row.replies or 0) > 0 then
-		chip("reply " .. tostring(row.replies), "accent")
+		badges[#badges + 1] = ui.span("reply", "warning")
 	end
 	if row.claim ~= nil then
-		chip("⧗ " .. tostring(row.claim), "info")
+		badges[#badges + 1] = ui.span("⧗ " .. tostring(row.claim), "accent")
 	end
 	if row.report ~= nil then
-		chip("report", "info")
+		badges[#badges + 1] = ui.span("report", "accent")
+	end
+	for i, badge in ipairs(badges) do
+		spans[#spans + 1] = ui.span(i == 1 and "  " or " · ", "muted")
+		spans[#spans + 1] = badge
 	end
 	return spans
 end
 
--- State labels are padded to the longest one so every group's table lines its
--- columns up with the others: each group is its own table, and a column is as
--- wide as its widest cell. No-break spaces, since Tern collapses plain ones.
-local STATE_LABEL_WIDTH = 15
+-- A rule the way the terminal board draws one: the label at the left, then the
+-- line to the pane's edge in `tone`. Tern centres a rule's label between two
+-- lines of its own colour; the plugin's CSS hides those and cuts this line at the
+-- edge instead.
+local function ruleNode(label, tone)
+	local spans = {}
+	for _, span in ipairs(label) do
+		spans[#spans + 1] = span
+	end
+	spans[#spans + 1] = ui.span(" " .. string.rep("─", 400), tone ~= "" and tone or "muted")
+	return ui.rule(spans)
+end
 
-local function padStateLabel(label)
-	local text = tostring(label)
-	local missing = STATE_LABEL_WIDTH - #text
+-- Each group is its own table, and a column is as wide as its widest cell, so
+-- cells are padded to the widest value on the whole board for the groups to line
+-- up as the terminal board's one list does. The padding is no-break spaces:
+-- Tern collapses runs of plain ones.
+local function pad(text, width)
+	local missing = width - utf8.len(text)
 	if missing > 0 then
 		return text .. string.rep("\u{00A0}", missing)
 	end
 	return text
 end
 
-local function rowCells(row, idWidth)
+local function padStart(text, width)
+	local missing = width - utf8.len(text)
+	if missing > 0 then
+		return string.rep("\u{00A0}", missing) .. text
+	end
+	return text
+end
+
+-- Widest `#id`, state label, category and age on the board.
+local function boardWidths(state)
+	local widths = { id = 0, label = 0, category = 0, age = 0 }
+	for _, row in ipairs(state.rows or {}) do
+		widths.id = math.max(widths.id, utf8.len("#" .. tostring(row.id)))
+		widths.label = math.max(widths.label, utf8.len(tostring(row.label or "")))
+		widths.category = math.max(widths.category, utf8.len(tostring(row.category or "")))
+		widths.age = math.max(widths.age, utf8.len(tostring(row.age or "")))
+	end
+	return widths
+end
+
+-- Wide enough for `critical`, as in the terminal board.
+local SEVERITY_WIDTH = 8
+
+local function severitySpan(severity)
+	if severity == nil then
+		return ui.span(pad("—", SEVERITY_WIDTH), "muted")
+	end
+	local tone = SEVERITY_TONES[severity] or ""
+	-- Critical stands out from high, as in the terminal board.
+	if severity == "critical" then
+		tone = "strong " .. tone
+	end
+	return ui.span(pad(tostring(severity), SEVERITY_WIDTH), tone)
+end
+
+local function rowCells(row, widths)
 	local tone = rowTone(row)
-	local cells = {}
-	-- The id leads the text in the mono face, padded to the widest id on the
-	-- board so the titles start in one column. The padding is no-break spaces:
-	-- Tern collapses runs of plain ones.
-	local id = "#" .. tostring(row.id)
+	local settled = row.group == "done"
+	-- The id leads the text, bold and padded to the widest id so the titles start
+	-- in one column; a Done id recedes like its title.
 	local text = titleSpans(row)
-	table.insert(text, 1, ui.span(id .. string.rep("\u{00A0}", math.max(0, idWidth - #id) + 1) .. " ", "mono"))
+	table.insert(text, 1, ui.span(pad("#" .. tostring(row.id), widths.id) .. "\u{00A0}", settled and "strong muted" or "strong"))
 	-- The state icon leads the title cell: a cell's text truncates at its end and
 	-- never takes the icon with it, and the title column is never dropped, so the
 	-- icon shows at any width. The label is its tooltip and has its own column,
 	-- which goes before the title when the pane narrows.
-	cells[1] = {
-		icon = stateIcon(row),
-		tone = tone ~= "" and tone or nil,
-		text = text,
-		title = tostring(row.label or ""),
+	return {
+		{
+			icon = stateIcon(row),
+			tone = tone ~= "" and tone or nil,
+			text = text,
+			title = tostring(row.label or ""),
+		},
+		{ ui.span(pad(tostring(row.label or ""), widths.label), tone) },
+		{ severitySpan(row.severity) },
+		{ ui.span(pad(tostring(row.category or ""), widths.category), "muted") },
+		{ ui.span(padStart(tostring(row.age or ""), widths.age), "muted") },
 	}
-	cells[2] = { ui.span(padStateLabel(row.label), tone) }
-	if row.severity ~= nil then
-		cells[3] = { badge = { text = tostring(row.severity), tone = SEVERITY_TONES[row.severity] or "" } }
-	else
-		cells[3] = { ui.span("", "muted") }
-	end
-	cells[4] = { ui.span(tostring(row.age or ""), "muted") }
-	cells[5] = { ui.span(tostring(row.category or ""), "muted") }
-	return cells
-end
-
--- Width of the widest `#id` on the board, so every group pads its ids alike.
-local function idWidthOf(state)
-	local width = 0
-	for _, row in ipairs(state.rows or {}) do
-		width = math.max(width, #tostring(row.id) + 1)
-	end
-	return width
 end
 
 local function groupTable(state, group)
 	local rows = {}
-	local idWidth = idWidthOf(state)
+	local widths = boardWidths(state)
 	for _, row in ipairs(group.rows or {}) do
 		rows[#rows + 1] = {
 			id = tostring(row.id),
-			cells = rowCells(row, idWidth),
+			cells = rowCells(row, widths),
 			menu = rowMenu(row),
 			title = tostring(row.title or ""),
 		}
@@ -1111,12 +1025,14 @@ local function listNode(state)
 	local groups = snap.groups or {}
 	for _, group in ipairs(groups) do
 		local title = tostring(group.title or group.id)
-		-- A ruled header in the group's own colour, the way the terminal board
-		-- rules its groups, so the groups read as sections instead of loose text.
-		children[#children + 1] = ui.rule({
-			ui.span(title, GROUP_TONES[group.id] or ""),
-			ui.span("  " .. tostring(#(group.rows or {})), "muted"),
-		})
+		-- The terminal board's group header: a bar, the title in bold and the
+		-- count, on a rule in the group's own colour.
+		local tone = GROUP_TONES[group.id] or ""
+		children[#children + 1] = ruleNode({
+			ui.span("▌ ", tone),
+			ui.span(title, "strong " .. tone),
+			ui.span(" " .. tostring(#(group.rows or {})), "muted"),
+		}, tone)
 		children[#children + 1] = groupTable(state, group)
 	end
 	if #groups == 0 then
@@ -1181,7 +1097,7 @@ local function detailNode(state)
 	}
 	local replies = detail.replies or {}
 	if #replies > 0 then
-		children[#children + 1] = ui.rule("pending replies")
+		children[#children + 1] = ruleNode({ ui.span("pending replies", "warning") }, "muted")
 		local lines = {}
 		for _, reply in ipairs(replies) do
 			lines[#lines + 1] = ui.text({
@@ -1191,8 +1107,8 @@ local function detailNode(state)
 		end
 		children[#children + 1] = ui.col(lines)
 	end
-	children[#children + 1] = ui.rule("body")
-	children[#children + 1] = ui.md(linkable(bodyWindow(state, tostring(detail.body or ""))))
+	children[#children + 1] = ruleNode({ ui.span("body", "muted") }, "muted")
+	children[#children + 1] = ui.md(linkable(tostring(detail.body or "")))
 	return ui.col(children)
 end
 
@@ -1208,10 +1124,9 @@ local LIST_HINTS = {
 	{ keys = { "esc" }, label = "back" },
 }
 
+-- Nothing scrolls the detail from a key (see the detail branch of `handleKey`),
+-- so the hints name no scroll keys.
 local DETAIL_HINTS = {
-	{ keys = { "j", "k" }, label = "scroll" },
-	{ keys = { "pgup", "pgdn" }, label = "page" },
-	{ keys = { "g", "G" }, label = "ends" },
 	{ keys = { "r" }, label = "reply" },
 	{ keys = { "e" }, label = "edit" },
 	{ keys = { "1–7" }, label = "state" },
@@ -1273,13 +1188,6 @@ local function dockNode(state)
 		children[#children + 1] = ui.text({ ui.span(tostring(state.status.text), state.status.tone) })
 	end
 	children[#children + 1] = hintsNode(state)
-	if state.view == "detail" and (state.scrollTotal or 0) > 0 then
-		-- Where the body window sits, so a key that moved it is visible even when
-		-- the text it moved to looks alike.
-		children[#children + 1] = ui.text({
-			ui.span("line " .. tostring((state.scroll or 0) + 1) .. " of " .. tostring(state.scrollTotal), "muted"),
-		})
-	end
 	children[#children + 1] = legendNode(state)
 	return ui.col(children)
 end
@@ -1304,9 +1212,6 @@ tern.block.define("board", {
 			mode = "none",
 			input = "",
 			view = "list",
-			scroll = 0,
-			scrollMax = 0,
-			scrollTotal = 0,
 			gen = 0,
 			alive = true,
 			loading = true,
@@ -1424,7 +1329,7 @@ tern.block.define("board", {
 		end
 	end,
 
-	font = "sans",
+	font = "mono",
 
 	save = function(state)
 		return {

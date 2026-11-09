@@ -1,10 +1,45 @@
-/* omp-board: the issues board's own surface.
-   Tern draws the block with its own table, badge and markdown looks; these rules
-   only tighten the sheet and keep the dock's legend quiet. */
+/* omp-board: the issues board's own surface, set in the terminal's face so it
+   reads like the terminal board. */
 
-/* Tern's table is a div tree (`.sf-tbl`), not a <table>. */
-[data-surface="plugin.omp-board.board"] .sf-tbl {
-	font-variant-numeric: tabular-nums;
+/* The terminal board has no column heads: a row is `#id`, state, severity, title
+   and so on, and the colours say which is which. Tern's table always draws a head
+   row (`.sf-tbl-row.head`), so it is hidden here. */
+[data-surface="plugin.omp-board.board"] .sf-tbl-row.head {
+	visibility: hidden;
+	height: 0;
+	min-height: 0;
+	padding: 0;
+	border: 0;
+	overflow: hidden;
+}
+
+[data-surface="plugin.omp-board.board"] .sf-tbl-row,
+[data-surface="plugin.omp-board.board"] .sf-tbl-c {
+	border: 0;
+	box-shadow: none;
+}
+
+[data-surface="plugin.omp-board.board"] .sf-tbl-body {
+	margin-top: -14px;
+}
+
+[data-surface="plugin.omp-board.board"] .sf-rule::before,
+[data-surface="plugin.omp-board.board"] .sf-rule::after {
+	display: none;
+}
+
+[data-surface="plugin.omp-board.board"] .sf-rule,
+[data-surface="plugin.omp-board.board"] .sf-rule-label {
+	font-family: inherit;
+	font-size: inherit;
+}
+
+[data-surface="plugin.omp-board.board"] .sf-rule-label {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	white-space: nowrap;
+	text-align: left;
 }
 
 [data-surface="plugin.omp-board.board"] .sf-dock {
@@ -14,18 +49,25 @@
 
 /* Tern draws an inline code span as a padded chip. In issue prose the code is a
    word inside a sentence, so that padding reads as a stray space next to the
-   punctuation around it: `( code )`, `code ,`, `code .`. The mono face and the
-   tint stay; only the horizontal padding goes. Fenced blocks are `.code`, not
-   `code`, so they are untouched. */
+   punctuation around it: `( code )`, `code ,`, `code .`. The tint stays; only the
+   horizontal padding goes. Fenced blocks are `.code`, not `code`, so they are
+   untouched. */
 [data-surface="plugin.omp-board.board"] .sf-md code {
 	padding-left: 0;
 	padding-right: 0;
 }
 
-/* A fenced block does not wrap, so a long line (a log line, a command) loses
-   everything past the pane's right edge, and nothing here scrolls sideways.
-   Wrapping keeps the text; the copy button still copies the source lines. */
-[data-surface="plugin.omp-board.board"] .sf-md .code {
-	white-space: pre-wrap;
-	overflow-wrap: anywhere;
+/* Tern sets markdown headings in the UI face even on a mono surface; the
+   terminal board's headings are the terminal's face, bold and coloured. */
+[data-surface="plugin.omp-board.board"] .sf-md .md h1,
+[data-surface="plugin.omp-board.board"] .sf-md .md h2,
+[data-surface="plugin.omp-board.board"] .sf-md .md h3,
+[data-surface="plugin.omp-board.board"] .sf-md .md h4 {
+	font-family: inherit !important;
+}
+
+/* An ordered list's numbers are wider in the mono face than the indent Tern
+   leaves for them, so `1.` lost its digit to the pane's edge. */
+[data-surface="plugin.omp-board.board"] .sf-md ol {
+	padding-left: 3ch;
 }

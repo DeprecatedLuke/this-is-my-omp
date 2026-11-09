@@ -271,10 +271,10 @@ already in writes nothing, exactly like the keypress.
 ## Tern
 
 The board also ships as a [Tern](https://tern.sh) plugin (`tern/`, id `omp-board`),
-so it can be drawn with Tern's own tables, badges and markdown instead of running
-the TUI in a pane. The block is a client of [`omp-board api`](#api): every action
-goes through the same TypeScript code as the terminal board, so the two cannot
-drift apart.
+so it can be drawn with Tern's own tables and markdown, in the terminal's face,
+instead of running the TUI in a pane. The block is a client of
+[`omp-board api`](#api): every action goes through the same TypeScript code as
+the terminal board, so the two cannot drift apart.
 
 Link the plugin once. It runs `bin/omp-board`, so it needs a Bun the launcher
 accepts (see [Install](#install)):
@@ -305,9 +305,9 @@ and it reloads live through `omp-board api wait`.
 
 | Key | Action |
 |---|---|
-| `j` `k` / `↑` `↓` | previous / next issue; in the detail, scroll a line |
-| `pgup` `pgdn` | a page of issues; in the detail, a page of the body |
-| `home` `end`, `g` `G` | first / last issue; in the detail, the top / bottom of the body |
+| `j` `k` / `↑` `↓` | previous / next issue |
+| `pgup` `pgdn` | a page of issues |
+| `home` `end`, `g` `G` | first / last issue |
 | `enter` / `i` / double-click | open the detail view (a Finished issue is marked seen) |
 | `r` | reply to the issue; `enter` sends, `esc` cancels |
 | `e` | open the issue file in Tern |
@@ -316,30 +316,32 @@ and it reloads live through `omp-board api wait`.
 | `1`–`7` | set the state; `7` asks for `f` fixed, `w` wontfix or `d` duplicate |
 | `esc` | clear the filter, cancel a prompt, or leave the detail view |
 
-The detail body is a window the block draws itself — the markdown cut at the
-scroll line, with fences and tables repaired where a cut would break them — so the
-keys move the text and the dock reads `line N of M`. The wheel still scrolls the
-drawn window with Tern's own overlay thumb, the only scrollbar in the pane: Tern's
-pane bar (`.tv-bar`) stays transparent on a block. Plugin CSS cannot reach that
-bar anyway — `data-surface` is only on the block's inner regions, and Tern's CSS
-engine rejects `:has()`.
-
-A block cannot drive Tern's surface scroll from a key: `cx:frame` has no scroll
-op, `BlockCx` has no command call, and the window's `scroll_line_up` …
+The detail view is the issue's fields and its whole body as one markdown node,
+scrolled by Tern's own wheel and scrollbar. No key scrolls it, so its hints name
+none: a block cannot drive Tern's surface scroll — `cx:frame` has no scroll op,
+`BlockCx` has no command call, and the window's `scroll_line_up` …
 `scroll_bottom` actions run without error and move nothing on a block (they scroll
-a terminal's scrollback). So after a wheel the view is wherever the wheel left it
-until the next key redraws the window.
+a terminal's scrollback).
+
+The block reads like the terminal board. It sets the terminal's face throughout
+(`font = "mono"`, with the plugin's CSS pulling markdown headings into it too).
+Its first two lines are the terminal board's header — `▌ omp-board · repo path`
+with the filter, `done: all` or the issue count after it, then each group's
+count in the group's colour — and each group opens with a `▌ Title count` rule in
+that colour. Tern's table heads and row lines are hidden by the plugin's CSS, and
+its centred rule lines are replaced by a line drawn after the label.
 
 A row starts with one cell that never goes: the state's icon (one of Tern's named
-icons, in the state's colour, with the state as its tooltip), the `#id` in mono
-and the title, cut at its end, with its reply / claim / report chips. The state
-label, severity, age and category follow, and as the pane narrows they go in that
-order backwards: category first, then age, severity and the label (on a sample
-tracker: category below about 620 px of board, age below 500, severity below 460,
-the label below 375 — the widths follow the content). The icons are `warning`
-needs you, `play` up next, `ellipse` open, `running` running, `rocket` awaiting
-deploy, `pause` deferred, `check` fixed, `x` wontfix, `minus` duplicate and
-`inbox` finished. The detail view heads its card with the same icon.
+icons, in the state's colour, with the state as its tooltip), the bold `#id`, the
+title cut at its end, and then the `reply`, `⧗ xxxxxx` and `report` badges as
+coloured words. The state label, severity (coloured text; critical in bold, `—`
+when unset), category and age follow in the terminal board's order, padded to the
+board's widest value so every group lines up. As the pane narrows they go
+category first, then age, severity and the label; a Done row recedes like the
+terminal's. The icons are `warning` needs you, `play` up next, `ellipse` open,
+`running` running, `rocket` awaiting deploy, `pause` deferred, `check` fixed, `x`
+wontfix, `minus` duplicate and `inbox` finished. The detail view heads its card
+with the same icon.
 
 Right-clicking a row offers the same states, Done with each resolution, Reply,
 Open file and — when the issue has one — Open report. The dock names the last
