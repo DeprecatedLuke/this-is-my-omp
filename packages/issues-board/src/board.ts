@@ -103,11 +103,6 @@ function printableChar(data: string): string | undefined {
 	return chars.length === 1 ? chars[0] : undefined;
 }
 
-/** OSC 8 hyperlink: a terminal that supports them opens `url` on ctrl+click. */
-function hyperlink(url: string, text: string): string {
-	return `\x1b]8;;${url}\x07${text}\x1b]8;;\x07`;
-}
-
 /** Severity as a row shows it: critical stands out from high, unset is a dash. */
 function paintSeverity(severity: string | undefined): string {
 	if (!severity) return theme.fg("dim", "—");
@@ -894,15 +889,9 @@ export class BoardComponent implements Component {
 		const locations = frontmatter.location ?? [];
 		for (const location of locations) rows.push(["location", inline(location)]);
 		const report = reportValue(record);
-		if (report !== undefined) {
-			const url = reportUrl(report, this.#reportBase);
-			// A configured site gets a real OSC 8 link (ctrl+click opens it in the
-			// user's browser); without one the issue's own value is shown as written.
-			rows.push([
-				"report",
-				url === report ? theme.fg("accent", inline(report)) : hyperlink(url, theme.fg("accent", url)),
-			]);
-		}
+		// Plain text, not an OSC 8 link: herdr auto-detects `http(s)://` on ctrl+click,
+		// and an escape sequence cut by the viewport swallows the rest of the screen.
+		if (report !== undefined) rows.push(["report", theme.fg("accent", inline(reportUrl(report, this.#reportBase)))]);
 		const claim = claimedBy(this.#inbox, record.id);
 		if (claim !== undefined) rows.push(["claimed", theme.fg("accent", claim)]);
 		const replies = pendingReplies(this.#inbox, record.id);

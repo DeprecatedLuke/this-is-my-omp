@@ -197,8 +197,9 @@ detail view shows the link. `report://<project>/<slug>` resolves to
 `agent-reports` plugin (`omp plugin config set agent-reports url https://…`).
 Without a configured url the raw value is shown.
 
-The detail view renders it as an OSC 8 hyperlink, so ctrl+click in herdr opens
-the report in the real browser. The board never spawns a browser itself.
+The detail view prints the resolved URL as plain text; herdr auto-detects
+`http(s)://` URLs, so ctrl+click opens the report in the real browser. The board
+never spawns a browser itself.
 
 ## API
 
