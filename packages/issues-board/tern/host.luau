@@ -53,19 +53,35 @@ local FALLBACK_STATES = {
 	{ key = "7", id = "done", title = "Done" },
 }
 
--- The lowest priority hides first when the pane is narrow, so the title carries
--- the highest: it is the one column that must never go. After it, the order is
--- the order the board can afford to lose them: category, then age, then
--- severity. The title is also the only column that grows, so the table always
--- fills the pane instead of stopping short of its right edge.
+-- The lowest priority hides first when the pane is narrow. The id and the title
+-- carry the top priority and are never dropped; the state icon leads the title
+-- cell (see `rowCells`), so a row always says which issue it is and where it
+-- stands. The title is the only column that grows (so the table fills the pane)
+-- and the only one that truncates. As the pane narrows the rest go in the order
+-- the board can best afford to lose them: category, age, severity, then the
+-- state's label (the icon's tooltip still names the state).
 local COLUMNS = {
-	{ id = "id", head = "#", mono = true, priority = 9 },
-	{ id = "state", head = "State", priority = 8 },
-	{ id = "title", head = "Title", grow = 1, truncate = "end", priority = 10 },
-	{ id = "severity", head = "Severity", priority = 5 },
-	{ id = "age", head = "Age", align = "end", priority = 4 },
-	{ id = "category", head = "Category", priority = 3 },
+	{ id = "title", head = "Issue", grow = 1, truncate = "end", priority = 20 },
+	{ id = "state", head = "State", priority = 4 },
+	{ id = "severity", head = "Severity", priority = 3 },
+	{ id = "age", head = "Age", align = "end", priority = 2 },
+	{ id = "category", head = "Category", priority = 1 },
 }
+
+-- Tern's named icon per state (12px, in the row's tone), instead of the TUI's
+-- text glyphs, which Tern's sans face draws unevenly (`||`, a half-filled `◐`).
+-- Every name was checked against Tern's icon registry (`tern.chrome.program_icon`
+-- rejects unknown names) and seen rendered in a row.
+local STATE_ICONS = {
+	["needs-you"] = "warning",
+	["up-next"] = "play",
+	["open"] = "ellipse",
+	["running"] = "running",
+	["awaiting-deploy"] = "rocket",
+	["deferred"] = "pause",
+}
+local DONE_ICONS = { fixed = "check", wontfix = "x", duplicate = "minus" }
+local FINISHED_ICON = "inbox"
 
 -- The row menu, in the order the terminal board offers the same actions.
 local MENU_ACTIONS = {
@@ -120,6 +136,16 @@ local function indexOf(rows, id)
 		end
 	end
 	return nil
+end
+
+local function stateIcon(row)
+	if row.group == "finished" then
+		return FINISHED_ICON
+	end
+	if row.group == "done" then
+		return DONE_ICONS[row.status] or "check"
+	end
+	return STATE_ICONS[row.state] or "todo"
 end
 
 local function rowTone(row)
@@ -997,43 +1023,64 @@ end
 
 -- State labels are padded to the longest one so every group's table lines its
 -- columns up with the others: each group is its own table, and a column is as
--- wide as its widest cell.
+-- wide as its widest cell. No-break spaces, since Tern collapses plain ones.
 local STATE_LABEL_WIDTH = 15
 
 local function padStateLabel(label)
 	local text = tostring(label)
 	local missing = STATE_LABEL_WIDTH - #text
 	if missing > 0 then
-		return text .. string.rep(" ", missing)
+		return text .. string.rep("\u{00A0}", missing)
 	end
 	return text
 end
 
-local function rowCells(row)
+local function rowCells(row, idWidth)
 	local tone = rowTone(row)
 	local cells = {}
-	cells[1] = { ui.span("#" .. tostring(row.id), "mono") }
-	-- One marker per state: the TUI's glyph, in the state's tone. No status dot on
-	-- top of it, and the label padded only to the longest label so the column
-	-- stays as narrow as the widest state.
-	cells[2] = { ui.span(tostring(row.glyph or "") .. " " .. padStateLabel(row.label), tone) }
-	cells[3] = titleSpans(row)
+	-- The id leads the text in the mono face, padded to the widest id on the
+	-- board so the titles start in one column. The padding is no-break spaces:
+	-- Tern collapses runs of plain ones.
+	local id = "#" .. tostring(row.id)
+	local text = titleSpans(row)
+	table.insert(text, 1, ui.span(id .. string.rep("\u{00A0}", math.max(0, idWidth - #id) + 1) .. " ", "mono"))
+	-- The state icon leads the title cell: a cell's text truncates at its end and
+	-- never takes the icon with it, and the title column is never dropped, so the
+	-- icon shows at any width. The label is its tooltip and has its own column,
+	-- which goes before the title when the pane narrows.
+	cells[1] = {
+		icon = stateIcon(row),
+		tone = tone ~= "" and tone or nil,
+		text = text,
+		title = tostring(row.label or ""),
+	}
+	cells[2] = { ui.span(padStateLabel(row.label), tone) }
 	if row.severity ~= nil then
-		cells[4] = { badge = { text = tostring(row.severity), tone = SEVERITY_TONES[row.severity] or "" } }
+		cells[3] = { badge = { text = tostring(row.severity), tone = SEVERITY_TONES[row.severity] or "" } }
 	else
-		cells[4] = { ui.span("", "muted") }
+		cells[3] = { ui.span("", "muted") }
 	end
-	cells[5] = { ui.span(tostring(row.age or ""), "muted") }
-	cells[6] = { ui.span(tostring(row.category or ""), "muted") }
+	cells[4] = { ui.span(tostring(row.age or ""), "muted") }
+	cells[5] = { ui.span(tostring(row.category or ""), "muted") }
 	return cells
+end
+
+-- Width of the widest `#id` on the board, so every group pads its ids alike.
+local function idWidthOf(state)
+	local width = 0
+	for _, row in ipairs(state.rows or {}) do
+		width = math.max(width, #tostring(row.id) + 1)
+	end
+	return width
 end
 
 local function groupTable(state, group)
 	local rows = {}
+	local idWidth = idWidthOf(state)
 	for _, row in ipairs(group.rows or {}) do
 		rows[#rows + 1] = {
 			id = tostring(row.id),
-			cells = rowCells(row),
+			cells = rowCells(row, idWidth),
 			menu = rowMenu(row),
 			title = tostring(row.title or ""),
 		}
@@ -1092,7 +1139,7 @@ local function detailNode(state)
 		items[#items + 1] = { ui.span(label, "muted"), value }
 	end
 	add("id", { ui.span("#" .. tostring(row.id), "mono") })
-	add("state", { ui.span(tostring(row.glyph or "") .. " " .. tostring(row.label or ""), rowTone(row)) })
+	add("state", { ui.span(tostring(row.label or ""), rowTone(row)) })
 	if row.severity ~= nil then
 		add("severity", { ui.span(tostring(row.severity), SEVERITY_TONES[row.severity] or "") })
 	end
@@ -1121,12 +1168,16 @@ local function detailNode(state)
 		add("file", { ui.path(tostring(row.file), state.path) })
 	end
 
+	-- A card headed by the issue, with the row's state icon in the row's tone. (A
+	-- one-item `list` would carry the icon too, but a list is a scroll container of
+	-- its own, and the pane must have one scroller only.)
+	local tone = rowTone(row)
 	local children = {
-		ui.text({
-			ui.span("#" .. tostring(row.id) .. " ", "mono"),
-			ui.span(tostring(row.title or ""), "strong"),
-		}),
-		ui.kv(items),
+		ui.card(
+			{ ui.span("#" .. tostring(row.id) .. " ", "mono"), ui.span(tostring(row.title or ""), "strong") },
+			{ ui.kv(items) },
+			{ icon = stateIcon(row), tone = tone ~= "" and tone or nil }
+		),
 	}
 	local replies = detail.replies or {}
 	if #replies > 0 then

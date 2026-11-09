@@ -318,18 +318,28 @@ and it reloads live through `omp-board api wait`.
 
 The detail body is a window the block draws itself — the markdown cut at the
 scroll line, with fences and tables repaired where a cut would break them — so the
-keys move the text and the dock reads `line N of M`. Tern's own pane scrollbar is
-hidden for a board pane by the plugin's CSS
-(`section.tn-pane:has([data-surface="plugin.omp-board.board"]) .tv-bar`), so the
-keys are the one scroll you can see.
+keys move the text and the dock reads `line N of M`. The wheel still scrolls the
+drawn window with Tern's own overlay thumb, the only scrollbar in the pane: Tern's
+pane bar (`.tv-bar`) stays transparent on a block. Plugin CSS cannot reach that
+bar anyway — `data-surface` is only on the block's inner regions, and Tern's CSS
+engine rejects `:has()`.
 
 A block cannot drive Tern's surface scroll from a key: `cx:frame` has no scroll
 op, `BlockCx` has no command call, and the window's `scroll_line_up` …
 `scroll_bottom` actions run without error and move nothing on a block (they scroll
-a terminal's scrollback). The wheel can still move that surface, and since Tern
-scrolls it with its own scroller, `overflow: hidden` on the pane or on the block's
-region does not stop it — so after a wheel the view is wherever the wheel left it
+a terminal's scrollback). So after a wheel the view is wherever the wheel left it
 until the next key redraws the window.
+
+A row starts with one cell that never goes: the state's icon (one of Tern's named
+icons, in the state's colour, with the state as its tooltip), the `#id` in mono
+and the title, cut at its end, with its reply / claim / report chips. The state
+label, severity, age and category follow, and as the pane narrows they go in that
+order backwards: category first, then age, severity and the label (on a sample
+tracker: category below about 620 px of board, age below 500, severity below 460,
+the label below 375 — the widths follow the content). The icons are `warning`
+needs you, `play` up next, `ellipse` open, `running` running, `rocket` awaiting
+deploy, `pause` deferred, `check` fixed, `x` wontfix, `minus` duplicate and
+`inbox` finished. The detail view heads its card with the same icon.
 
 Right-clicking a row offers the same states, Done with each resolution, Reply,
 Open file and — when the issue has one — Open report. The dock names the last
