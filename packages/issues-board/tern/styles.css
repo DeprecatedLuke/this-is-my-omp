@@ -29,3 +29,14 @@
 	white-space: pre-wrap;
 	overflow-wrap: anywhere;
 }
+
+/* The detail view is a window the plugin scrolls itself, so Tern's own pane
+   scrollbar would be a second scroll for the same pane. Hide it — and only for a
+   pane holding this block: the scrollbar (`div.tv-bar`) is a sibling of the
+   block's surface, so it is reached with `:has()` from the pane, not from
+   `[data-surface]`. The thumb only: the track and the wheel are untouched.
+   `overflow: hidden` on `.tv.covered` and on `.sf-region` were both tried and do
+   not stop the wheel — Tern moves the surface with its own scroller. */
+section.tn-pane:has([data-surface="plugin.omp-board.board"]) .tv-bar {
+	display: none;
+}

@@ -305,9 +305,9 @@ and it reloads live through `omp-board api wait`.
 
 | Key | Action |
 |---|---|
-| `j` `k` / `↑` `↓` | previous / next issue |
-| `pgup` `pgdn` | a page of issues |
-| `home` `end`, `g` `G` | first / last issue |
+| `j` `k` / `↑` `↓` | previous / next issue; in the detail, scroll a line |
+| `pgup` `pgdn` | a page of issues; in the detail, a page of the body |
+| `home` `end`, `g` `G` | first / last issue; in the detail, the top / bottom of the body |
 | `enter` / `i` / double-click | open the detail view (a Finished issue is marked seen) |
 | `r` | reply to the issue; `enter` sends, `esc` cancels |
 | `e` | open the issue file in Tern |
@@ -316,14 +316,20 @@ and it reloads live through `omp-board api wait`.
 | `1`–`7` | set the state; `7` asks for `f` fixed, `w` wontfix or `d` duplicate |
 | `esc` | clear the filter, cancel a prompt, or leave the detail view |
 
-The detail view is one node and Tern's own surface scrolls it — one scrollbar, the
-wheel. It has no scroll keys: Tern gives a plugin block no way to scroll that
-surface from the keyboard. `cx:frame` has no scroll op (`{op = "scroll"}`,
-`{op = "scroll_by"}` are accepted and do nothing), `BlockCx` has no command call,
-and the window's `scroll_line_up` … `scroll_bottom` actions scroll a terminal's
-scrollback but not a block's surface (all six run without error and move nothing).
-Until Tern exposes that, the wheel is the only way, and the block does not draw a
-scroll position of its own.
+The detail body is a window the block draws itself — the markdown cut at the
+scroll line, with fences and tables repaired where a cut would break them — so the
+keys move the text and the dock reads `line N of M`. Tern's own pane scrollbar is
+hidden for a board pane by the plugin's CSS
+(`section.tn-pane:has([data-surface="plugin.omp-board.board"]) .tv-bar`), so the
+keys are the one scroll you can see.
+
+A block cannot drive Tern's surface scroll from a key: `cx:frame` has no scroll
+op, `BlockCx` has no command call, and the window's `scroll_line_up` …
+`scroll_bottom` actions run without error and move nothing on a block (they scroll
+a terminal's scrollback). The wheel can still move that surface, and since Tern
+scrolls it with its own scroller, `overflow: hidden` on the pane or on the block's
+region does not stop it — so after a wheel the view is wherever the wheel left it
+until the next key redraws the window.
 
 Right-clicking a row offers the same states, Done with each resolution, Reply,
 Open file and — when the issue has one — Open report. The dock names the last
