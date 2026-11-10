@@ -30,14 +30,25 @@ import {
 import { IssuesProtocolHandler } from "./protocol";
 import { QueueStallGuard, queueSignature, renderQueue } from "./queue";
 import { ReminderBudget, renderReminder } from "./reminder";
-import { renderFiledIssueInline, renderFiledIssuesFinal, renderRepliesMessage } from "./render";
-import { type DeliveredReply, type IssueReplies, REPLIES_MESSAGE_TYPE, renderReplies, repliesDetails } from "./replies";
+import { renderFiledIssueInline, renderFiledIssuesFinal, renderNeedsMessage, renderRepliesMessage } from "./render";
+import {
+	type DeliveredReply,
+	type IssueReplies,
+	NEEDS_MESSAGE_TYPE,
+	needsDetails,
+	REPLIES_MESSAGE_TYPE,
+	type RepliesDetails,
+	renderNeedsReminder,
+	renderReplies,
+	repliesDetails,
+} from "./replies";
 import { readIssuesSettings } from "./settings";
 import {
 	appendReplyHistory,
 	findIssueById,
 	type IssueRecord,
 	type IssueSummary,
+	listIssueRecords,
 	listIssues,
 	listQueuedIssues,
 	moveIssue,
@@ -150,6 +161,52 @@ async function mayTake(root: string, id: number, sessionId: string): Promise<boo
 }
 
 /**
+ * The issues this session holds that wait on the user, each with the text saying
+ * what it needs. Only an issue this session claimed ({@link mayTake}) is listed:
+ * a `needs-you` issue the user set on the board, or one another session holds, is
+ * not this session's to pick back up. Best effort — a store failure yields no
+ * reminder and never blocks the prompt.
+ */
+async function findWaitingIssues(pi: ExtensionAPI, ctx: ExtensionContext): Promise<IssueRecord[]> {
+	const root = ctx.cwd;
+	const sessionId = ctx.sessionManager.getSessionId();
+	let records: IssueRecord[];
+	try {
+		records = await listIssueRecords(root);
+	} catch (error) {
+		pi.logger.debug("issues: failed to read issues waiting on the user", {
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return [];
+	}
+	const waiting: IssueRecord[] = [];
+	for (const record of records) {
+		if (record.archived || record.frontmatter.stage !== "needs-you") continue;
+		try {
+			if (await mayTake(root, record.id, sessionId)) waiting.push(record);
+		} catch (error) {
+			pi.logger.debug("issues: failed to check a waiting issue's claim", {
+				id: record.id,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+	return waiting;
+}
+
+/**
+ * The delivered-replies reminder for this prompt. Typed apart from
+ * {@link BeforeAgentStartEventResult} so the waiting-issues reminder can merge
+ * into it — a prompt carries one message.
+ */
+interface RepliesReminder {
+	systemPrompt: string[];
+	customType: string;
+	content: string;
+	details: RepliesDetails;
+}
+
+/**
  * Turn the replies the user typed on `omp-board` into a reminder on this prompt,
  * then record them in their issues. Nothing wakes an idle session, so the next
  * prompt of the session holding an issue is the delivery point: a reply to an
@@ -162,7 +219,7 @@ async function deliverReplies(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	systemPrompt: string[],
-): Promise<BeforeAgentStartEventResult | undefined> {
+): Promise<RepliesReminder | undefined> {
 	const root = ctx.cwd;
 	const sessionId = ctx.sessionManager.getSessionId();
 	let pending: PendingReply[];
@@ -199,14 +256,11 @@ async function deliverReplies(
 	}
 	if (delivered.length === 0) return undefined;
 
-	const result: BeforeAgentStartEventResult = {
+	const result: RepliesReminder = {
 		systemPrompt,
-		message: {
-			customType: REPLIES_MESSAGE_TYPE,
-			content: renderReplies(delivered),
-			display: true,
-			details: repliesDetails(delivered),
-		},
+		customType: REPLIES_MESSAGE_TYPE,
+		content: renderReplies(delivered),
+		details: repliesDetails(delivered),
 	};
 	// The reminder is part of this prompt now; move each reply into its issue body.
 	await recordDelivered(pi, root, delivered);
@@ -312,9 +366,10 @@ export default function issuesPlugin(pi: ExtensionAPI): void {
 
 	pi.registerTool(issuesTool);
 
-	// The delivered-replies reminder is a custom message; keep its prompt header
-	// compact and let the expanded view show the reminder text itself.
+	// The prompt reminders are custom messages; keep their prompt header compact
+	// and let the expanded view show the reminder text itself.
 	pi.registerMessageRenderer(REPLIES_MESSAGE_TYPE, renderRepliesMessage);
+	pi.registerMessageRenderer(NEEDS_MESSAGE_TYPE, renderNeedsMessage);
 
 	// A reviewer subagent files through the tool; without this its `issues add`
 	// results never reach the parent's extracted-findings stream, so the task
@@ -466,7 +521,46 @@ export default function issuesPlugin(pi: ExtensionAPI): void {
 			// Replies are queued by the board between prompts, so only a real prompt
 			// delivers them — a revive re-runs the handler over an existing transcript.
 			if (event.reason !== "prompt") return { systemPrompt };
-			return (await deliverReplies(pi, ctx, systemPrompt)) ?? { systemPrompt };
+			const replies = await deliverReplies(pi, ctx, systemPrompt);
+			// Issues this session handed to the user are still its own: the prompt may
+			// well be their answer, and only the agent can tell.
+			const waiting = await findWaitingIssues(pi, ctx);
+			if (waiting.length === 0) {
+				if (replies === undefined) return { systemPrompt };
+				return {
+					systemPrompt,
+					message: {
+						customType: replies.customType,
+						content: replies.content,
+						display: true,
+						details: replies.details,
+					},
+				};
+			}
+			const needsText = renderNeedsReminder(waiting);
+			const needs = needsDetails(waiting).issues;
+			if (replies === undefined) {
+				return {
+					systemPrompt,
+					message: {
+						customType: NEEDS_MESSAGE_TYPE,
+						content: needsText,
+						display: true,
+						details: { issues: needs },
+					},
+				};
+			}
+			// One message per prompt: the delivered replies keep their card, and the
+			// waiting issues ride in the same text and details.
+			return {
+				systemPrompt,
+				message: {
+					customType: replies.customType,
+					content: `${replies.content}\n\n${needsText}`,
+					display: true,
+					details: { ...replies.details, waiting: needs },
+				},
+			};
 		}
 		if (ctx.agent.kind !== "sub") return;
 		if (!pi.getActiveTools().includes(issuesTool.name)) return;

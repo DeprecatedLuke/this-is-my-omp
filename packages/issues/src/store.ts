@@ -47,6 +47,9 @@ export interface IssueFrontmatter {
 	severity?: IssueSeverity;
 	status?: IssueStatus;
 	stage?: IssueStage;
+	/** What the agent needs from the user (a decision, approval or action). Only
+	 *  an active `needs-you` issue carries it; every other write drops it. */
+	needs?: string;
 	/** Report this issue is written up in: `report://<project>/<slug>` or an `http(s)://` URL. */
 	report?: string;
 	location?: string[];
@@ -89,6 +92,10 @@ export interface AddIssueInput {
 	status?: IssueStatus;
 	/** Report URL this issue is written up in. */
 	report?: string;
+	/** Board stage to file the issue in. A terminal `status` carries none. */
+	stage?: IssueStage;
+	/** What the agent needs from the user; only with `stage: needs-you`. */
+	needs?: string;
 	location?: string[];
 	/** Extra frontmatter fields to merge in (e.g. `confidence`, `file_path`). */
 	extra?: Record<string, unknown>;
@@ -303,7 +310,18 @@ function yamlValueLine(key: string, value: unknown): string[] {
 }
 
 function formatFrontmatter(frontmatter: IssueFrontmatter): string {
-	const preferred = ["title", "category", "severity", "status", "stage", "report", "created", "updated", "location"];
+	const preferred = [
+		"title",
+		"category",
+		"severity",
+		"status",
+		"stage",
+		"needs",
+		"report",
+		"created",
+		"updated",
+		"location",
+	];
 	const lines: string[] = [];
 	for (const key of preferred) {
 		if (frontmatter[key] !== undefined) lines.push(...yamlValueLine(key, frontmatter[key]));
@@ -336,6 +354,7 @@ function coerceFrontmatter(raw: Record<string, unknown>): IssueFrontmatter {
 	if (typeof raw.severity === "string") out.severity = raw.severity as IssueSeverity;
 	if (typeof raw.status === "string") out.status = raw.status as IssueStatus;
 	if (typeof raw.stage === "string") out.stage = raw.stage as IssueStage;
+	if (typeof raw.needs === "string") out.needs = raw.needs;
 	if (typeof raw.report === "string") out.report = raw.report;
 	if (typeof raw.created === "string") out.created = raw.created;
 	if (typeof raw.updated === "string") out.updated = raw.updated;
@@ -516,22 +535,37 @@ export async function addIssue(cwd: string, input: AddIssueInput): Promise<AddIs
 	if (!body) {
 		throw new Error("Issue body is required.");
 	}
+	assertValidStage(input.stage, "Issue rejected: ");
+	assertValidNeeds(input.needs, "Issue rejected: ");
+	if (input.needs !== undefined && input.stage !== "needs-you") {
+		throw new Error("Issue rejected: `needs` goes only with stage `needs-you`.");
+	}
+	const status = input.status ?? "open";
+	if (input.stage !== undefined && !ACTIVE_STATUSES.has(status)) {
+		throw new Error(`Issue rejected: a '${status}' issue is archived work and carries no stage.`);
+	}
 
 	const slug = slugifyTitle(title);
 	const dir = path.join(getIssuesRoot(cwd), category);
 	const createdAt = nowIso();
-	const frontmatter: IssueFrontmatter = {
-		title,
-		category,
-		severity: input.severity,
-		status: input.status ?? "open",
-		created: createdAt,
-		updated: createdAt,
-		report: input.report,
-		location: input.location && input.location.length > 0 ? input.location : undefined,
-		...input.extra,
-	};
+	const frontmatter: IssueFrontmatter = withBoardInvariants(
+		{
+			title,
+			category,
+			severity: input.severity,
+			status,
+			stage: input.stage,
+			needs: input.needs,
+			created: createdAt,
+			updated: createdAt,
+			report: input.report,
+			location: input.location && input.location.length > 0 ? input.location : undefined,
+			...input.extra,
+		},
+		false,
+	);
 	assertValidStage(frontmatter.stage, "Issue rejected: ");
+	assertValidNeeds(frontmatter.needs, "Issue rejected: ");
 	assertValidReport(frontmatter.report, "Issue rejected: ");
 	const content = serializeIssue(frontmatter, body);
 
@@ -610,6 +644,32 @@ function assertValidStage(stage: unknown, label: string): void {
 }
 
 /**
+ * Reject a `needs` that is not a non-empty string. It is prose, so there is no
+ * enum to check — only that the agent actually said what it needs.
+ */
+function assertValidNeeds(needs: unknown, label: string): void {
+	if (needs === undefined || needs === null) return;
+	if (typeof needs === "string" && needs.trim().length > 0) return;
+	throw new Error(`${label}\`needs\` must be a non-empty string: say what you need from the user.`);
+}
+
+/**
+ * Enforce the board invariants every write must hold: an archived issue carries
+ * no `stage` (so an unarchive never resurrects a stale one), and only an active
+ * `needs-you` issue carries `needs`, so every other write drops the key. Trims
+ * the text when it survives.
+ */
+function withBoardInvariants(frontmatter: IssueFrontmatter, archived: boolean): IssueFrontmatter {
+	if (archived) delete frontmatter.stage;
+	if (archived || frontmatter.stage !== "needs-you") {
+		delete frontmatter.needs;
+		return frontmatter;
+	}
+	if (frontmatter.needs !== undefined) frontmatter.needs = frontmatter.needs.trim();
+	return frontmatter;
+}
+
+/**
  * Reject a `report` that is neither a `report://<project>/<slug>` handle nor an
  * `http(s)://` URL, so the board never renders a dead link.
  */
@@ -675,6 +735,10 @@ async function writeIssueRecord(
 	const root = target.archived ? getArchiveRoot(cwd) : getIssuesRoot(cwd);
 	const dir = path.join(root, target.category);
 	const filePath = path.join(dir, target.filename);
+	// The one choke point every record write passes through, so the board
+	// invariants hold no matter which op (or `issues://` edit) produced it.
+	withBoardInvariants(frontmatter, target.archived);
+	assertValidNeeds(frontmatter.needs, "Issue write rejected: ");
 	await fs.mkdir(dir, { recursive: true });
 	await Bun.write(filePath, serializeIssue(frontmatter, body));
 	if (filePath !== current.filePath) {
@@ -723,6 +787,7 @@ function parseIssueFileContent(content: string, source: string): { frontmatter: 
 		);
 	}
 	assertValidStage(frontmatter.stage, "issues:// write rejected: ");
+	assertValidNeeds(frontmatter.needs, "issues:// write rejected: ");
 	assertValidReport(frontmatter.report, "issues:// write rejected: ");
 	frontmatter.title = title;
 	return { frontmatter, body: parsed.body };
@@ -854,6 +919,8 @@ export async function unarchiveIssue(
 export interface IssueMove {
 	/** Target stage; `null` clears the key. */
 	stage: IssueStage | null;
+	/** What the agent needs from the user; set with `stage: "needs-you"`. */
+	needs?: string;
 	/** Target status. A terminal one archives, an active one unarchives. */
 	status?: IssueStatus;
 	/** Recorded as `archive_reason` when the move lands in the archive. */
@@ -869,6 +936,10 @@ export interface IssueMove {
  */
 export async function moveIssue(cwd: string, id: number, move: IssueMove): Promise<IssueRecord> {
 	assertValidStage(move.stage, "Issue move rejected: ");
+	assertValidNeeds(move.needs, "Issue move rejected: ");
+	if (move.needs !== undefined && move.stage !== "needs-you") {
+		throw new Error("Issue move rejected: `needs` goes only with stage `needs-you`.");
+	}
 	if (move.status !== undefined && !ISSUE_STATUSES.has(move.status)) {
 		throw new Error(
 			`Issue move rejected: invalid status '${move.status}'. Use one of: open, in-progress, fixed, wontfix, duplicate.`,
@@ -891,6 +962,11 @@ export async function moveIssue(cwd: string, id: number, move: IssueMove): Promi
 	} else {
 		frontmatter.stage = move.stage;
 	}
+	// `needs` rides with `needs-you`: a move that carries it sets it, one that
+	// leaves the issue in `needs-you` keeps the existing text (the board's state
+	// key sets the stage without touching the text), and every other target drops
+	// it in the write below.
+	if (move.needs !== undefined) frontmatter.needs = move.needs;
 	if (nextArchived) {
 		if (move.reason !== undefined && move.reason.trim().length > 0) {
 			frontmatter.archive_reason = move.reason.trim();

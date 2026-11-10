@@ -135,7 +135,10 @@ the target is **Up next**; see [Replies](#replies).
 | `q` / `ctrl+c` | quit |
 
 In the detail view `↑` `↓` / `j` `k` / page keys scroll, `g` / `G` jump to the
-top and bottom, `esc` goes back and `e` edits the file.
+top and bottom, `esc` goes back and `e` edits the file. A `needs-you` issue that
+says what it needs from the user leads the view with a `Needs you` line in the
+state's colour and that text, above the fields and the body, and scrolls with the
+rest of it; an issue without a `needs` value shows nothing there.
 
 The board reloads itself whenever `.omp/issues` or the issues inbox changes
 (debounced 150 ms), so an agent filing, editing or taking an issue shows up
@@ -251,13 +254,14 @@ A row is what the list draws:
 ```json
 {"id":12,"title":"…","category":"runtime","severity":"high","group":"active",
  "state":"up-next","label":"Up next","glyph":"\uf500","status":"open","stage":"up-next",
- "archived":false,"updated":"2026-11-08T09:12:00.000Z","age":"3h","replies":0,
+ "needs":null,"archived":false,"updated":"2026-11-08T09:12:00.000Z","age":"3h","replies":0,
  "claim":"01a1ac","report":"https://reports.example.com/r/myrepo/board-api",
  "file":"/home/me/src/myrepo/.omp/issues/runtime/12-board-api.md"}
 ```
 
 `group` is the list group the issue is in (`finished`, `active`, `deploy`,
-`done`), `state`/`label`/`glyph` are the chip, `claim` is the first six
+`done`), `state`/`label`/`glyph` are the chip, `needs` is what the agent needs
+from the user (`null` unless the issue is `needs-you`), `claim` is the first six
 characters of the live session holding it (the detail view has the whole id in
 `claimFull`), and `report` is resolved through the `agent-reports` url like the
 TUI's link. `counts` and the rows are after `--filter`, like the TUI header, and
@@ -326,7 +330,10 @@ and it reloads live through `omp-board api wait`.
 | `esc` | clear the filter, cancel a prompt, or leave the detail view |
 
 The detail view is the issue's fields and its whole body as one markdown node,
-scrolled by Tern's own wheel and scrollbar. No key scrolls it, so its hints name
+scrolled by Tern's own wheel and scrollbar. A `needs-you` issue that carries a
+`needs` value opens with that block above its card: a `Needs you` line and the
+text below it, both in the state's colour, so what the user has to decide comes
+first. No key scrolls the view, so its hints name
 none: a block cannot drive Tern's surface scroll — `cx:frame` has no scroll op,
 `BlockCx` has no command call, and the window's `scroll_line_up` …
 `scroll_bottom` actions run without error and move nothing on a block (they scroll

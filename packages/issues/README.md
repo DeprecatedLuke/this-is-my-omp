@@ -38,10 +38,10 @@ Registered as a discoverable extension tool, so the host mounts it as the
 
 | Op | Required | Optional | Effect |
 | --- | --- | --- | --- |
-| `add` | `category`, `title`, `body` | `severity`, `status`, `report`, `location[]`, `extra` | Allocates the next global id, writes `.omp/issues/<category>/<id>-<slug>.md`. |
+| `add` | `category`, `title`, `body` | `severity`, `status`, `stage`, `needs`, `report`, `location[]`, `extra` | Allocates the next global id, writes `.omp/issues/<category>/<id>-<slug>.md`; `stage: "running"` (or `"needs-you"` with `needs`) files and claims it for the calling session in one call. |
 | `archive` | `id` | `reason`, `status` (default `fixed`) | Moves the file to `.omp/issues/.archive/<category>/`. |
 | `unarchive` | `id` | `status` (default `open`) | Restores the file to its category. |
-| `stage` | `id`, `stage` | — | Sets the issue's board column (`needs-you`, `up-next`, `running`, `awaiting-deploy`, `deferred`) or clears it with `none`; no read and no rewrite. |
+| `stage` | `id`, `stage` (plus `needs` when `needs-you`) | `needs` | Sets the issue's board column (`needs-you`, `up-next`, `running`, `awaiting-deploy`, `deferred`) or clears it with `none`; no read and no rewrite. |
 | `list` | — | `category`, `archived`, `severity`, `status`, `stage`, `query`, `limit` | Markdown listing; `details.listing` feeds the TUI. |
 
 Ids are global across categories and stable across archive cycles. Bodies and
@@ -61,7 +61,7 @@ rejected like an out-of-enum `status`/`severity`.
 
 | Stage | Meaning |
 | --- | --- |
-| `needs-you` | Blocked on a human decision or action. |
+| `needs-you` | Blocked on a human decision or action; carries `needs`. |
 | `up-next` | The user wants it started next. |
 | `running` | Work in flight across sessions; prefer it over `in-progress` for long-running work. |
 | `awaiting-deploy` | Fixed in code, not deployed. |
@@ -69,6 +69,25 @@ rejected like an out-of-enum `status`/`severity`.
 
 Omit it for plain open work. Moving an issue to Done clears the key, and an
 archived issue never shows a stage.
+
+### `needs`
+
+An optional `needs` key says what the agent needs from the user — the decision,
+approval or action — in plain prose. `omp-board` shows it at the top of the
+issue, so a `needs-you` issue without it is a question nobody can read.
+
+It is set together with the stage: `{"op":"stage","id":12,"stage":"needs-you",
+"needs":"Pick the storage layout: one table per tenant, or a shared table with a
+tenant column?"}`. The `stage` op requires it for `needs-you` and rejects it with
+any other stage; `add` takes both to file an issue that already asks something.
+
+The key carries an invariant: it exists only while an active issue sits in
+`needs-you`. Every other write drops it — a stage change, an archive, an
+`issues://<id>.md` rewrite, a board reply moving the issue to Up next, or the
+plugin's own hand-off marking it `running`. `writeIssueRecord` is the single
+write choke point, so no path can leave a stale question behind, and a move that
+does not carry `needs` keeps the existing text only when the issue was already
+`needs-you` (the board's state key sets the stage without touching the text).
 
 The plugin sets `running` itself when it hands a held issue back to its session —
 a requeued issue at turn end, a reply at prompt time — so the board shows Running
@@ -86,23 +105,27 @@ lifecycle path — board moves, archive, unarchive, metadata edits — preserves
 
 While `enabled`, the main agent gets a static `§ Issue Board` system-prompt
 section (`src/prompts/board.md`): file an issue for work that outlives the turn,
-needs the user or waits on a deploy, set `stage: running` with the `stage` op
-before starting anything, use `running` rather than `in-progress` for unfinished
-work, and cite issues as `issues://<id>`. The in-progress reminder points the
-same way: an issue not finished this turn goes back to `open` with `stage:
-running` or `needs-you`. It only covers issues this session holds, so no session
-is told to finish another session's work.
+needs the user or waits on a deploy (`add` with `"stage":"running"` files and
+claims it in one call), set `stage: running` with the `stage` op before starting
+anything, hand a blocked issue back with `stage: needs-you` plus a `needs` line
+saying what the user must decide or do, set an issue `running` when their chat
+message answers it, use `running` rather than `in-progress` for unfinished work,
+and cite issues as `issues://<id>`. The in-progress reminder points the same way:
+an issue not finished this turn goes back to `open` with `stage: running` or
+`needs-you`. It only covers issues this session holds, so no session is told to
+finish another session's work.
 
 ### An issue follows the session you gave it to
 
 No session takes an issue on its own. An issue becomes a session's work when the
 user asks that session to work on it: the agent sets `stage: running` with the
-`stage` op, which claims the issue (`claims/<id>`, holding the session id). From
-then on the issue follows that session — the user's board replies and requeues
-for it are delivered to that session and to no other, at its next prompt or at
-turn end while it is working. A queued, `up-next` or replied-to issue that no
-session holds is delivered to nobody: the board shows the reply waiting, and
-nothing is claimed on a session's behalf.
+`stage` op, which claims the issue (`claims/<id>`, holding the session id).
+Setting `needs-you` claims it as well, so the answer comes back to the session
+that asked. From then on the issue follows that session — the user's board
+replies and requeues for it are delivered to that session and to no other, at
+its next prompt or at turn end while it is working. A queued, `up-next` or
+replied-to issue that no session holds is delivered to nobody: the board shows
+the reply waiting, and nothing is claimed on a session's behalf.
 
 - **The heartbeat** is `sessions/<sessionId>`, an empty file whose mtime is
   refreshed every 30 s while the session lives. A session is live while its
@@ -155,6 +178,20 @@ adds an `<system-reminder>` custom message (`src/prompts/replies.md`, custom typ
 then appends each one to the issue body under `## Replies` as
 `### User reply · <time>`. That history is the only trace a reply leaves in git.
 
+### When the user answers in chat instead
+
+A `needs-you` issue is a question, and the user often answers it in the chat
+rather than on the board. So the same prompt-time pass also lists the issues this
+session holds (`mayTake`) that sit in `needs-you`, each with its `needs` text, in
+a second `<system-reminder>` (`src/prompts/needs.md`, custom type
+`omp-issues/needs`): *these wait on you; if the user's message answers one, set
+it `running` with the `stage` op before acting on it, otherwise leave it.* The
+stage is never flipped automatically — a prompt may be about something else, so
+the agent decides. When replies are delivered too, both ride in the one message a
+prompt can carry: the replies reminder first, then the waiting list, with
+`details.waiting` on the replies card. Best effort throughout: a store failure
+is logged and never blocks the prompt.
+
 ### The turn-end queue
 
 At the end of a main-agent turn, issues **this session holds** that have pending
@@ -162,8 +199,8 @@ replies or a local queue mark are the queue. If anything is queued the plugin
 returns `{ continue: true, additionalContext }` with a reminder
 (`src/prompts/queue.md`) instead of letting the turn settle silently, and the agent
 works the issues and keeps their stages truthful: `running` while in flight,
-archived when done, and `needs-you` when it needs the user back — that is the
-loop-breaker.
+archived when done, and `needs-you` (with its `needs` line) when it needs the user
+back — that is the loop-breaker.
 
 A committed `stage: up-next` alone does not queue anything: only the local queue
 mark counts, so a cloned repo's stage cannot drive the user's agents. A mark
@@ -203,8 +240,9 @@ in the system prompt's internal-URL list.
 `renderCall` and `renderResult` are driven entirely by `details` from the shared
 `@this-is-my-omp/render` kit: op badge and subject on the call row, a framed
 card with id, severity/status badges, category, location, and the `issues://` URL
-for `add`, `open → fixed` transitions for `archive`/`unarchive`, stage transitions
-in the board's colors for `stage`, and a
+for `add`, `open → fixed` transitions for `archive`/`unarchive`, stage transitions in the
+board's colors for `stage` (with the `needs` text under a hand-off, and the filed
+stage plus `needs` on an `add` card), and a
 severity-sorted list (collapsed with `… N more issues`) for `list`. Subagent
 `issues add` calls stream into the parent task card through the subprocess tool
 registry, so a review's filed issues are visible without extra plumbing.

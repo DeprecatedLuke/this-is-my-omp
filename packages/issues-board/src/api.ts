@@ -73,6 +73,8 @@ export interface ApiRow {
 	glyph: string;
 	status: IssueStatus | null;
 	stage: IssueStage | null;
+	/** What the agent needs from the user; only on a `needs-you` issue. */
+	needs: string | null;
 	archived: boolean;
 	updated: string | null;
 	age: string;
@@ -274,6 +276,7 @@ function rowFor(
 		glyph: stateGlyph(record, group),
 		status: record.frontmatter.status ?? null,
 		stage: record.frontmatter.stage ?? null,
+		needs: record.frontmatter.needs ?? null,
 		archived: record.archived,
 		updated: record.frontmatter.updated ?? null,
 		age: relativeAge(record),

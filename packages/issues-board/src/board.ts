@@ -31,7 +31,7 @@ import {
 } from "@oh-my-pi/pi-tui";
 import { formatKeyHint, formatKeyHints } from "@oh-my-pi/pi-tui/key-hint-format";
 import { getMarkdownTheme, theme } from "@oh-my-pi/pi-tui/theme";
-import { inline, keyValueRows, pathLabel, severityTone, statusTone, type Tone } from "@this-is-my-omp/render";
+import { inline, keyValueRows, pathLabel, sanitize, severityTone, statusTone, type Tone } from "@this-is-my-omp/render";
 import { inboxDir, loadSeen, type PendingReply } from "omp-issues/src/inbox";
 import { type IssueRecord, listIssueRecords } from "omp-issues/src/store";
 import { markIssueSeen, moveIssueTo, replyToBoardIssue } from "./actions";
@@ -856,13 +856,40 @@ export class BoardComponent implements Component {
 		if (!record) {
 			body = ["", theme.fg("dim", " This issue is no longer on disk.")];
 		} else {
-			body = [...this.#detailFields(record, width), "", ...this.#detailBody(record, width)];
+			const needs = this.#detailNeeds(record, width);
+			body = [
+				...needs,
+				...(needs.length > 0 ? [""] : []),
+				...this.#detailFields(record, width),
+				"",
+				...this.#detailBody(record, width),
+			];
 		}
 		this.#detailScroll.setLines(body);
 		this.#detailScroll.setHeight(bodyHeight);
 		const lines = [header, ...this.#detailScroll.render(width), ...footer];
 		while (lines.length < height) lines.push("");
 		return lines.slice(0, height);
+	}
+
+	/** What the agent needs from the user: the first thing in the detail view, above everything else. */
+	#detailNeeds(record: IssueRecord, width: number): string[] {
+		const needs = record.frontmatter.needs?.trim();
+		if (needs === undefined || needs === "") return [];
+		const tone = stateIdTone("needs-you");
+		const wrapWidth = Math.max(20, width - 2);
+		const lines = [` ${theme.bold(theme.fg(tone, "Needs you"))}`];
+		// Line breaks the agent wrote are kept: each line wraps on its own, a blank
+		// one stays blank.
+		for (const raw of sanitize(needs).split("\n")) {
+			const text = raw.trim();
+			if (text === "") {
+				lines.push("");
+				continue;
+			}
+			for (const line of wrapTextWithAnsi(text, wrapWidth)) lines.push(` ${theme.fg(tone, line)}`);
+		}
+		return lines;
 	}
 
 	#detailFields(record: IssueRecord, width: number): string[] {

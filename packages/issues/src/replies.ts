@@ -9,11 +9,15 @@
  * event wiring in `index.ts` stays a thin adapter.
  */
 import { prompt } from "@oh-my-pi/pi-utils";
+import needsTemplate from "./prompts/needs.md" with { type: "text" };
 import repliesTemplate from "./prompts/replies.md" with { type: "text" };
 import type { IssueRecord } from "./store";
 
 /** Custom message type of the reminder that carries queued replies. */
 export const REPLIES_MESSAGE_TYPE = "omp-issues/replies";
+
+/** Custom message type of the reminder that lists issues waiting on the user. */
+export const NEEDS_MESSAGE_TYPE = "omp-issues/needs";
 
 /** One reply text taken out of the inbox, with the time it was queued. */
 export interface DeliveredReply {
@@ -37,6 +41,22 @@ export interface ReplySummary {
 /** Details carried by the reminder message so the TUI renders from the store, not the prompt text. */
 export interface RepliesDetails {
 	replies: ReplySummary[];
+	/** Issues waiting on the user, when the same prompt message carries the replies reminder. */
+	waiting?: NeedsSummary[];
+}
+
+/** One issue waiting on the user, as the TUI card lists it. */
+export interface NeedsSummary {
+	id: number;
+	title: string;
+	url: string;
+	/** What the agent needs from the user. */
+	needs: string;
+}
+
+/** Details carried by the needs reminder so the TUI renders from the store, not the prompt text. */
+export interface NeedsDetails {
+	issues: NeedsSummary[];
 }
 
 /** Model-visible reminder listing every delivered reply with its issue and verbatim text. */
@@ -60,6 +80,32 @@ export function repliesDetails(items: readonly IssueReplies[]): RepliesDetails {
 			id: item.record.id,
 			title: item.record.frontmatter.title,
 			url: `issues://${item.record.id}`,
+		})),
+	};
+}
+
+/**
+ * Model-visible reminder listing the issues this session holds that wait on the
+ * user, each with the text saying what it needs. The agent decides whether the
+ * prompt answers one — the stage is never flipped for it.
+ */
+export function renderNeedsReminder(records: readonly IssueRecord[]): string {
+	return prompt.render(needsTemplate, {
+		count: String(records.length),
+		issues: records
+			.map(record => `### issues://${record.id} — ${record.frontmatter.title}\n${record.frontmatter.needs ?? ""}`)
+			.join("\n\n"),
+	});
+}
+
+/** Message details for the TUI card. */
+export function needsDetails(records: readonly IssueRecord[]): NeedsDetails {
+	return {
+		issues: records.map(record => ({
+			id: record.id,
+			title: record.frontmatter.title,
+			url: `issues://${record.id}`,
+			needs: record.frontmatter.needs ?? "",
 		})),
 	};
 }

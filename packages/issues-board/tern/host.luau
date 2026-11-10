@@ -1067,12 +1067,21 @@ local function detailNode(state)
 
 	-- A card headed by the issue, led by the row's state glyph in the row's tone.
 	local tone = rowTone(row)
-	local children = {
-		ui.card(
-			{ glyphSpan(row, tone), ui.span("#" .. tostring(row.id) .. " ", "mono"), ui.span(tostring(row.title or ""), "strong") },
-			{ ui.kv(items) }
-		),
-	}
+	local children = {}
+	-- What the agent needs from the user leads the view, above the issue card.
+	local needs = tostring(row.needs or "")
+	if needs ~= "" then
+		local needsTone = STATE_TONES["needs-you"]
+		local lines = { ui.text({ ui.span("Needs you", "strong " .. needsTone) }) }
+		for line in needs:gmatch("[^\r\n]+") do
+			lines[#lines + 1] = ui.text({ ui.span(line, needsTone) })
+		end
+		children[#children + 1] = ui.col(lines)
+	end
+	children[#children + 1] = ui.card(
+		{ glyphSpan(row, tone), ui.span("#" .. tostring(row.id) .. " ", "mono"), ui.span(tostring(row.title or ""), "strong") },
+		{ ui.kv(items) }
+	)
 	local replies = detail.replies or {}
 	if #replies > 0 then
 		children[#children + 1] = ruleNode({ ui.span("pending replies", "warning") }, "muted")

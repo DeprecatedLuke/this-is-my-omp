@@ -26,7 +26,7 @@ import {
 	toolCard,
 	toolHeader,
 } from "@this-is-my-omp/render";
-import type { RepliesDetails } from "./replies";
+import type { NeedsDetails, RepliesDetails } from "./replies";
 import type { IssueSeverity, IssueStage, IssueStatus, IssueSummary } from "./store";
 import type { IssueFilters, IssuesToolDetails, IssuesToolParams } from "./tool";
 
@@ -147,7 +147,9 @@ function addCard(theme: Theme, details: IssuesToolDetails, expanded: boolean): C
 	const badges: Badge[] = [];
 	if (details.severity) badges.push({ text: details.severity, tone: severityTone(details.severity) });
 	if (details.status) badges.push({ text: details.status, tone: statusTone(details.status) });
+	if (details.stage) badges.push({ text: details.stage, tone: STAGE_TONE[details.stage] });
 	const rows: Array<readonly [string, string]> = [];
+	if (details.needs) rows.push(["needs", details.needs]);
 	if (details.category) rows.push(["category", details.category]);
 	if (details.location) rows.push(["location", details.location]);
 	if (details.confidence !== undefined) rows.push(["confidence", details.confidence.toFixed(2)]);
@@ -197,6 +199,8 @@ function stageCard(theme: Theme, details: IssuesToolDetails, expanded: boolean):
 		const arrow = theme.fg("dim", theme.symbol("key.right"));
 		body.push(`${stageBadge(theme, details.previousStage)} ${arrow} ${stageBadge(theme, next ?? "none")}`);
 	}
+	// The `needs` text is the point of a hand-off, so it rides collapsed too.
+	if (details.needs) body.push(...keyValueRows(theme, [["needs", details.needs]]));
 	if (expanded && details.category) body.push(...keyValueRows(theme, [["category", details.category]]));
 	return toolCard(theme, {
 		header: {
@@ -270,20 +274,62 @@ export function renderRepliesMessage(
 	theme: Theme,
 ): Component | undefined {
 	const details = message.details as RepliesDetails | undefined;
-	if (details === undefined || details.replies.length === 0) return undefined;
+	if (details === undefined) return undefined;
+	// A prompt that also listed the issues waiting on the user carries both, so
+	// the card shows them under the replies.
+	const waiting = details.waiting ?? [];
+	if (details.replies.length === 0 && waiting.length === 0) return undefined;
 	if (options.expanded) return undefined;
 	const count = details.replies.length;
 	return toolCard(theme, {
 		header: {
 			tool: "Issue replies",
 			icon: "success",
-			title: `${count} ${count === 1 ? "reply" : "replies"}`,
+			title: count === 0 ? `${waiting.length} waiting on you` : `${count} ${count === 1 ? "reply" : "replies"}`,
 		},
-		body: collapsedList(details.replies, reply => `${theme.fg("accent", reply.url)} ${inline(reply.title)}`, {
-			expanded: false,
-			noun: "reply",
-			theme,
-		}),
+		body: [
+			...collapsedList(details.replies, reply => `${theme.fg("accent", reply.url)} ${inline(reply.title)}`, {
+				expanded: false,
+				noun: "reply",
+				theme,
+			}),
+			...collapsedList(
+				waiting,
+				issue => `${theme.fg("warning", issue.url)} ${inline(issue.title)} ${theme.fg("dim", inline(issue.needs))}`,
+				{ expanded: false, noun: "issue", theme },
+			),
+		],
+	});
+}
+
+/**
+ * `registerMessageRenderer` callback for {@link NEEDS_MESSAGE_TYPE}: the
+ * reminder that lists the issues this session holds that wait on the user.
+ *
+ * Collapsed, one row per issue — its URL, title and what it needs — keeps the
+ * prompt header small; expanded returns `undefined` so the frame falls back to
+ * the reminder text itself.
+ */
+export function renderNeedsMessage(
+	message: { details?: unknown },
+	options: { expanded: boolean },
+	theme: Theme,
+): Component | undefined {
+	const details = message.details as NeedsDetails | undefined;
+	if (details === undefined || details.issues.length === 0) return undefined;
+	if (options.expanded) return undefined;
+	const count = details.issues.length;
+	return toolCard(theme, {
+		header: {
+			tool: "Waiting on you",
+			icon: "warning",
+			title: `${count} ${count === 1 ? "issue" : "issues"}`,
+		},
+		body: collapsedList(
+			details.issues,
+			issue => `${theme.fg("accent", issue.url)} ${inline(issue.title)} ${theme.fg("dim", inline(issue.needs))}`,
+			{ expanded: false, noun: "issue", theme },
+		),
 	});
 }
 

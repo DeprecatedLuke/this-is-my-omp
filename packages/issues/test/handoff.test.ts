@@ -21,12 +21,21 @@ import { useTempAgentDir } from "./agent-dir";
 
 type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
 
+/** The custom message `before_agent_start` attaches to a prompt. */
+interface PromptMessage {
+	customType: string;
+	content: string;
+	details: unknown;
+}
+
 /** One main session: the real plugin loaded into a host that only routes its events and its tool. */
 interface Session {
 	/** Run every handler the plugin registered for `event`, in order; the last result wins. */
 	fire(event: string, payload?: unknown): Promise<unknown>;
-	/** A user prompt: the reply reminder the plugin attached to it, if any. */
+	/** A user prompt: the text of the reminder the plugin attached to it, if any. */
 	prompt(): Promise<string | undefined>;
+	/** A user prompt: the whole reminder message the plugin attached to it, if any. */
+	promptMessage(): Promise<PromptMessage | undefined>;
 	/** A turn end: the reminder that keeps the session going, if any. */
 	turnEnd(): Promise<string | undefined>;
 	/** Call the `issues` tool from this session. */
@@ -90,8 +99,11 @@ function openSession(sessionId: string): Session {
 	const session: Session = {
 		fire,
 		async prompt() {
+			return (await session.promptMessage())?.content;
+		},
+		async promptMessage() {
 			const result = await fire("before_agent_start", { systemPrompt: [], reason: "prompt" });
-			return (result as { message?: { content: string } } | undefined)?.message?.content;
+			return (result as { message?: PromptMessage } | undefined)?.message;
 		},
 		async turnEnd() {
 			const result = await fire("session_stop");
@@ -137,6 +149,12 @@ async function start(session: Session, id: number, sessionId: string): Promise<v
 	expect(await claimOwner(tempDir, id)).toBe(sessionId);
 }
 
+/** `session` hands issue `id` back to the user with the `needs` text a `needs-you` move requires. */
+async function handBack(session: Session, id: number, needs = "Which runner should it use?"): Promise<void> {
+	const result = await session.tool({ op: "stage", id, stage: "needs-you", needs });
+	expect(result.isError).toBeUndefined();
+}
+
 /** The board's "Up next" move: what a user requeue writes. */
 async function requeue(id: number): Promise<void> {
 	await moveIssue(tempDir, id, { stage: "up-next" });
@@ -152,7 +170,7 @@ describe("issues plugin: hand-off marks the issue running", () => {
 		const { a } = await twoSessions();
 		const id = await plainIssue("Flaky deploy");
 		await start(a, id, "session-a");
-		await a.tool({ op: "stage", id, stage: "needs-you" });
+		await handBack(a, id);
 		await replyToIssue(tempDir, id, "Please retry on arm.");
 		expect((await findIssueById(tempDir, id))?.frontmatter.stage).toBe("up-next");
 
@@ -164,7 +182,7 @@ describe("issues plugin: hand-off marks the issue running", () => {
 		const { a } = await twoSessions();
 		const id = await plainIssue("Flaky deploy");
 		await start(a, id, "session-a");
-		await a.tool({ op: "stage", id, stage: "needs-you" });
+		await handBack(a, id);
 		await requeue(id);
 		const filePath = (await findIssueById(tempDir, id))!.filePath;
 
@@ -263,7 +281,7 @@ describe("issues plugin: an issue follows the session that set it running", () =
 		expect(await a.turnEnd()).toContain("Keep the patch version.");
 
 		// The agent hands it back; the user requeues it on the board.
-		await a.tool({ op: "stage", id, stage: "needs-you" });
+		await handBack(a, id);
 		await requeue(id);
 		expect(await b.turnEnd()).toBeUndefined();
 		expect(await a.turnEnd()).toContain("Pin the toolchain");
@@ -332,7 +350,7 @@ describe("issues plugin: an issue follows the session that set it running", () =
 				const filePath = (await findIssueById(tempDir, id))!.filePath;
 				const text = await Bun.file(filePath).text();
 				await Bun.write(filePath, text.replace(/^status: open$/m, "status: fixed"));
-				const moved = await a.tool({ op: "stage", id, stage: "needs-you" });
+				const moved = await a.tool({ op: "stage", id, stage: "needs-you", needs: "Ship it?" });
 				expect(moved.details?.archived).toBe(true);
 			},
 		},
@@ -371,5 +389,120 @@ describe("issues plugin: an issue follows the session that set it running", () =
 			expect(await session.turnEnd()).toBeUndefined();
 		}
 		expect(await pendingTexts()).toEqual(["Use the version from the lockfile."]);
+	});
+});
+
+describe("issues plugin: a prompt lists the issues this session handed to the user", () => {
+	it("lists only the needs-you issues this session holds, with what each needs, and leaves their stage alone", async () => {
+		const { a, b } = await twoSessions();
+		const mine = await plainIssue("Pick the storage layout");
+		await start(a, mine, "session-a");
+		await handBack(a, mine, "One table per tenant, or a shared table?");
+		// Held by this session, but still running: nothing to ask.
+		await start(a, await plainIssue("Rotate the build cache"), "session-a");
+		const theirs = await plainIssue("Prune stale branches");
+		await start(b, theirs, "session-b");
+		await handBack(b, theirs, "Delete the release branches too?");
+		// Moved to needs-you without any session: nobody holds it.
+		await addIssue(tempDir, {
+			category: "infra",
+			title: "Trim the release notes",
+			body: "B.",
+			stage: "needs-you",
+			needs: "Keep the changelog link?",
+		});
+
+		const forA = await a.promptMessage();
+		expect(forA?.customType).toBe("omp-issues/needs");
+		expect(forA?.details).toEqual({
+			issues: [
+				{
+					id: mine,
+					title: "Pick the storage layout",
+					url: `issues://${mine}`,
+					needs: "One table per tenant, or a shared table?",
+				},
+			],
+		});
+		expect(forA?.content).toContain(`issues://${mine} — Pick the storage layout`);
+		expect(forA?.content).toContain("One table per tenant, or a shared table?");
+		for (const other of [
+			"Rotate the build cache",
+			"Prune stale branches",
+			"Delete the release branches too?",
+			"Trim the release notes",
+			"Keep the changelog link?",
+		]) {
+			expect(forA?.content).not.toContain(other);
+		}
+		// Only the agent can tell whether the prompt answers it: the stage is not flipped.
+		expect((await findIssueById(tempDir, mine))?.frontmatter.stage).toBe("needs-you");
+
+		const forB = await b.promptMessage();
+		expect(forB?.details).toEqual({
+			issues: [
+				{
+					id: theirs,
+					title: "Prune stale branches",
+					url: `issues://${theirs}`,
+					needs: "Delete the release branches too?",
+				},
+			],
+		});
+	});
+
+	it("an issue the session files straight into needs-you is its own, so its next prompt lists it", async () => {
+		const { a, b } = await twoSessions();
+		const filed = await a.tool({
+			op: "add",
+			category: "infra",
+			title: "Pick the storage layout",
+			body: "B.",
+			stage: "needs-you",
+			needs: "One table per tenant, or a shared table?",
+		});
+		expect(filed.isError).toBeUndefined();
+		const id = filed.details!.id!;
+
+		expect(await b.prompt()).toBeUndefined();
+		expect((await a.promptMessage())?.details).toEqual({
+			issues: [
+				{
+					id,
+					title: "Pick the storage layout",
+					url: `issues://${id}`,
+					needs: "One table per tenant, or a shared table?",
+				},
+			],
+		});
+	});
+
+	it("a board reply delivered on the same prompt carries the waiting issues in the one replies message", async () => {
+		const { a } = await twoSessions();
+		const waiting = await plainIssue("Pick the storage layout");
+		const answered = await plainIssue("Pin the toolchain");
+		await start(a, waiting, "session-a");
+		await start(a, answered, "session-a");
+		await handBack(a, waiting, "One table per tenant, or a shared table?");
+		await handBack(a, answered, "Which toolchain version?");
+		await replyToIssue(tempDir, answered, "Use the version from the lockfile.");
+
+		const message = await a.promptMessage();
+		expect(message?.customType).toBe("omp-issues/replies");
+		expect(message?.content).toContain("Use the version from the lockfile.");
+		expect(message?.content).toContain("One table per tenant, or a shared table?");
+		// The reply took the answered issue out of needs-you: it no longer waits on the user.
+		expect(message?.content).not.toContain("Which toolchain version?");
+		expect(message?.details).toEqual({
+			replies: [{ id: answered, title: "Pin the toolchain", url: `issues://${answered}` }],
+			waiting: [
+				{
+					id: waiting,
+					title: "Pick the storage layout",
+					url: `issues://${waiting}`,
+					needs: "One table per tenant, or a shared table?",
+				},
+			],
+		});
 	});
 });

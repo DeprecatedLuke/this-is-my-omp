@@ -46,6 +46,11 @@ const addParams = z.object({
 		.describe("report this issue is written up in: `report://<project>/<slug>` or an `https://` URL")
 		.optional(),
 	location: z.array(z.string()).describe("`path` or `path:line[-line]` references").optional(),
+	stage: z
+		.enum([...ISSUE_STAGES])
+		.describe("board state to file it in; `running` files and claims it for this session in one call")
+		.optional(),
+	needs: z.string().describe("what you need from the user; only with `stage: 'needs-you'`").optional(),
 	extra: z.record(z.string(), z.unknown()).describe("extra frontmatter fields").optional(),
 });
 
@@ -68,6 +73,12 @@ const stageParams = z.object({
 	stage: z
 		.enum([...ISSUE_STAGES, "none"])
 		.describe("board state to set; `none` clears it, `running` while you work, `needs-you` to hand it back"),
+	needs: z
+		.string()
+		.describe(
+			"what you need from the user — the decision, approval or action; required with `needs-you`, shown at the top of the issue",
+		)
+		.optional(),
 });
 
 const listParams = z.object({
@@ -112,6 +123,8 @@ export interface IssuesToolDetails {
 	previousStatus?: IssueStatus;
 	/** Board stage the file carries after the op. */
 	stage?: IssueStage;
+	/** What the agent needs from the user, when the issue sits in `needs-you`. */
+	needs?: string;
 	/** Stage the file carried before a `stage` op; absent when it had none. */
 	previousStage?: IssueStage;
 	/** Archive state before an `archive`/`unarchive`, for the transition row. */
@@ -162,6 +175,7 @@ function detailsFromRecord(op: IssuesToolParams["op"], record: IssueRecord): Iss
 		severity: record.frontmatter.severity,
 		status: record.frontmatter.status,
 		stage: record.frontmatter.stage,
+		needs: record.frontmatter.needs,
 		bodyPreview: extractBodyPreview(record.body),
 		location: Array.isArray(location) && location.length > 0 ? location[0] : undefined,
 		confidence,
@@ -189,10 +203,29 @@ function errorResult(op: IssuesToolParams["op"], error: unknown): AgentToolResul
 	};
 }
 
+/**
+ * `needs-you` and `needs` go together: the board shows that text at the top of
+ * the issue, so a hand-off without it is a question the user cannot read.
+ * `subject` names the op so the message matches the surrounding rejections.
+ */
+function assertNeedsPairing(stage: IssueStage | "none" | undefined, needs: string | undefined, subject: string): void {
+	if (stage === "needs-you") {
+		if (needs === undefined) {
+			throw new Error(
+				`${subject}\`stage: needs-you\` needs a \`needs\` text: what you need from the user — the decision, approval or action they must take.`,
+			);
+		}
+		return;
+	}
+	if (needs !== undefined) throw new Error(`${subject}\`needs\` goes only with stage \`needs-you\`.`);
+}
+
 async function executeAdd(
 	cwd: string,
 	params: Extract<IssuesToolParams, { op: "add" }>,
+	sessionId: string | undefined,
 ): Promise<AgentToolResult<IssuesToolDetails>> {
+	assertNeedsPairing(params.stage, params.needs, "New issue: ");
 	const input: AddIssueInput = {
 		category: params.category,
 		title: params.title,
@@ -201,10 +234,14 @@ async function executeAdd(
 		status: params.status,
 		report: params.report,
 		location: params.location,
+		stage: params.stage,
+		needs: params.needs,
 		extra: params.extra,
 	};
 	const { record } = await addIssue(cwd, input);
-	return textResult(summarizeRecord("Created", record), detailsFromRecord("add", record));
+	const outcome = await claimForStage(cwd, record, params.stage, sessionId);
+	const extra = outcome.conflict ?? (outcome.claimed ? "claimed for this session" : undefined);
+	return textResult(summarizeRecord("Created", record, extra), detailsFromRecord("add", record));
 }
 
 async function executeArchive(
@@ -250,6 +287,54 @@ async function executeUnarchive(
 	return textResult(summarizeRecord(wasActive ? "Already active" : "Unarchived", record), details);
 }
 
+/** What a stage move did to the issue's claim, if anything. */
+interface ClaimOutcome {
+	/** Set when another live session holds the issue and this one must not take it. */
+	conflict?: string;
+	/** `true` when this session holds the claim after the move. */
+	claimed: boolean;
+}
+
+/**
+ * The one claim path behind both `stage` and `add`: a move onto `running` hands
+ * the issue to the calling main session, and so does `needs-you` — the session
+ * that asked is the one the answer belongs to, so the user's reply (on the board
+ * or in its chat) comes back to it. A move into the archive retires the claim
+ * exactly as `archive` and the board's Done do, and any other move leaves it
+ * alone. A live session already working the issue is not displaced — the result
+ * tells the agent to raise it with the user. Bookkeeping only: a failed write
+ * must never fail the op, and a subagent (no session id) never claims.
+ */
+async function claimForStage(
+	cwd: string,
+	record: IssueRecord,
+	stage: IssueStage | undefined,
+	sessionId: string | undefined,
+): Promise<ClaimOutcome> {
+	try {
+		if (record.archived) {
+			// A move onto a terminal status archives, and archived work is over: the
+			// issue stops following any session.
+			await releaseClaim(cwd, record.id);
+			return { claimed: false };
+		}
+		if ((stage !== "running" && stage !== "needs-you") || sessionId === undefined) return { claimed: false };
+		const holder = await claimOwner(cwd, record.id);
+		if (holder !== undefined && holder !== sessionId && !(await claimIsStale(cwd, record.id))) {
+			return {
+				claimed: false,
+				conflict: `#${record.id} is held by another live session (${holder.slice(0, 6)}); two sessions on one issue will conflict, so tell the user.`,
+			};
+		}
+		await claim(cwd, record.id, sessionId);
+		return { claimed: true };
+	} catch {
+		// The stage is what the board shows; a claim that could not be written is
+		// not worth failing the op.
+		return { claimed: false };
+	}
+}
+
 async function executeStage(
 	cwd: string,
 	params: Extract<IssuesToolParams, { op: "stage" }>,
@@ -258,7 +343,11 @@ async function executeStage(
 	const before = await findIssueById(cwd, params.id);
 	// Archived issues carry no stage; say so instead of reporting a stage that was not kept.
 	if (before?.archived) throw new Error(`Issue #${params.id} is archived; unarchive it before setting a stage.`);
-	const record = await moveIssue(cwd, params.id, { stage: params.stage === "none" ? null : params.stage });
+	assertNeedsPairing(params.stage, params.needs, `Issue #${params.id}: `);
+	const record = await moveIssue(cwd, params.id, {
+		stage: params.stage === "none" ? null : params.stage,
+		needs: params.needs,
+	});
 	const details: IssuesToolDetails = {
 		...detailsFromRecord("stage", record),
 		previousStage: before?.frontmatter.stage,
@@ -266,29 +355,9 @@ async function executeStage(
 	};
 	let text =
 		params.stage === "none" ? `#${record.id} stage cleared` : `#${record.id} stage → ${record.frontmatter.stage}`;
-	// The claim is bookkeeping: a failed write must not turn a stage the file
-	// already carries into an error.
-	try {
-		if (record.archived) {
-			// A move onto a terminal status archives, and archived work is over: the
-			// issue stops following any session, exactly as `archive` and the board's
-			// Done leave it.
-			await releaseClaim(cwd, record.id);
-		} else if (params.stage === "running" && sessionId !== undefined) {
-			// Setting an issue running is how the user hands it to this session: it
-			// claims the issue, and from then on the issue's replies and requeues come
-			// here. A live session already working it is not displaced — the stage is
-			// still set, and the result tells the agent to raise it with the user.
-			const holder = await claimOwner(cwd, record.id);
-			if (holder !== undefined && holder !== sessionId && !(await claimIsStale(cwd, record.id))) {
-				text += `\n#${record.id} is held by another live session (${holder.slice(0, 6)}); two sessions on one issue will conflict, so tell the user.`;
-			} else {
-				await claim(cwd, record.id, sessionId);
-			}
-		}
-	} catch {
-		// The stage is what the board shows; a claim that could not be written is not worth failing the op.
-	}
+	if (record.frontmatter.needs) text += `\nNeeds: ${record.frontmatter.needs}`;
+	const outcome = await claimForStage(cwd, record, params.stage === "none" ? undefined : params.stage, sessionId);
+	if (outcome.conflict) text += `\n${outcome.conflict}`;
 	return textResult(text, details);
 }
 
@@ -350,7 +419,7 @@ export async function runIssuesOp(
 		try {
 			switch (params.op) {
 				case "add":
-					return await executeAdd(cwd, params);
+					return await executeAdd(cwd, params, options.sessionId);
 				case "archive":
 					return await executeArchive(cwd, params);
 				case "unarchive":

@@ -173,16 +173,16 @@ describe("issues tool", () => {
 	});
 
 	it("list with a stage returns only issues on that stage; `none` matches issues with no stage", async () => {
-		const rows: Array<{ title: string; stage?: "running" | "up-next" | "needs-you" }> = [
+		const rows: Array<{ title: string; stage?: "running" | "up-next" | "needs-you"; needs?: string }> = [
 			{ title: "Running work", stage: "running" },
 			{ title: "Queued work", stage: "up-next" },
-			{ title: "Parked work", stage: "needs-you" },
+			{ title: "Parked work", stage: "needs-you", needs: "Approve the plan?" },
 			{ title: "Unstaged work" },
 		];
-		for (const { title, stage } of rows) {
+		for (const { title, stage, needs } of rows) {
 			const created = await runIssuesOp(tempDir, { op: "add", category: "infra", title, body: "Body." });
 			const id = (created.details as IssuesToolDetails).id!;
-			if (stage !== undefined) await runIssuesOp(tempDir, { op: "stage", id, stage });
+			if (stage !== undefined) await runIssuesOp(tempDir, { op: "stage", id, stage, needs });
 		}
 		// Archived issues carry no stage, so only `none` matches them.
 		const done = await runIssuesOp(tempDir, { op: "add", category: "infra", title: "Done work", body: "Body." });
@@ -272,9 +272,126 @@ describe("issues tool", () => {
 		expect((rejected.details as IssuesToolDetails).error).toMatch(/invalid report/);
 		expect((await listIssues(tempDir)).map(summary => summary.title)).toEqual(["Flaky deploy"]);
 	});
+
+	it("stage needs-you records the trimmed `needs` text on the issue and reports it", async () => {
+		const created = await runIssuesOp(tempDir, { op: "add", category: "infra", title: "Flaky deploy", body: "B." });
+		const id = (created.details as IssuesToolDetails).id!;
+
+		const staged = await runIssuesOp(tempDir, {
+			op: "stage",
+			id,
+			stage: "needs-you",
+			needs: "  Approve moving CI to the arm runner?\n",
+		});
+
+		expect(staged.isError).toBeUndefined();
+		expect(textOf(staged)).toBe(`#${id} stage → needs-you\nNeeds: Approve moving CI to the arm runner?`);
+		expect(staged.details).toMatchObject({ stage: "needs-you", needs: "Approve moving CI to the arm runner?" });
+		const record = await findIssueById(tempDir, id);
+		expect(record?.frontmatter.stage).toBe("needs-you");
+		expect(record?.frontmatter.needs).toBe("Approve moving CI to the arm runner?");
+	});
+
+	const stageRejections: Array<{
+		name: string;
+		params: { stage: "needs-you" | "running" | "none"; needs?: string };
+		error: RegExp;
+	}> = [
+		{
+			name: "needs-you without `needs`",
+			params: { stage: "needs-you" },
+			error: /`stage: needs-you` needs a `needs` text/,
+		},
+		{
+			name: "needs-you with a blank `needs`",
+			params: { stage: "needs-you", needs: " \n " },
+			error: /non-empty string/,
+		},
+		{
+			name: "`needs` with stage running",
+			params: { stage: "running", needs: "Approve it?" },
+			error: /`needs` goes only with stage `needs-you`/,
+		},
+		{
+			name: "`needs` with stage none",
+			params: { stage: "none", needs: "Approve it?" },
+			error: /`needs` goes only with stage `needs-you`/,
+		},
+	];
+	for (const row of stageRejections) {
+		it(`stage rejects ${row.name} and leaves the file byte-identical`, async () => {
+			const created = await runIssuesOp(tempDir, {
+				op: "add",
+				category: "infra",
+				title: "Flaky deploy",
+				body: "B.",
+			});
+			const id = (created.details as IssuesToolDetails).id!;
+			await runIssuesOp(tempDir, { op: "stage", id, stage: "up-next" });
+			const filePath = (await findIssueById(tempDir, id))!.filePath;
+			const before = await Bun.file(filePath).text();
+
+			const result = await runIssuesOp(tempDir, { op: "stage", id, ...row.params });
+
+			expect(result.isError).toBe(true);
+			expect((result.details as IssuesToolDetails).error).toMatch(row.error);
+			expect(await Bun.file(filePath).text()).toBe(before);
+		});
+	}
+
+	const addRejections: Array<{
+		name: string;
+		params: {
+			stage?: "needs-you" | "up-next" | "running";
+			needs?: string;
+			status?: "fixed";
+		};
+		error: RegExp;
+	}> = [
+		{
+			name: "needs-you without `needs`",
+			params: { stage: "needs-you" },
+			error: /`stage: needs-you` needs a `needs` text/,
+		},
+		{
+			name: "needs-you with a blank `needs`",
+			params: { stage: "needs-you", needs: "   " },
+			error: /non-empty string/,
+		},
+		{
+			name: "`needs` with stage up-next",
+			params: { stage: "up-next", needs: "Approve it?" },
+			error: /`needs` goes only with stage `needs-you`/,
+		},
+		{
+			name: "`needs` without a stage",
+			params: { needs: "Approve it?" },
+			error: /`needs` goes only with stage `needs-you`/,
+		},
+		{
+			name: "a stage on a terminal status",
+			params: { stage: "running", status: "fixed" },
+			error: /a 'fixed' issue is archived work and carries no stage/,
+		},
+	];
+	for (const row of addRejections) {
+		it(`add rejects ${row.name} without creating a file`, async () => {
+			const result = await runIssuesOp(tempDir, {
+				op: "add",
+				category: "infra",
+				title: "Flaky deploy",
+				body: "B.",
+				...row.params,
+			});
+
+			expect(result.isError).toBe(true);
+			expect((result.details as IssuesToolDetails).error).toMatch(row.error);
+			expect(await listIssues(tempDir)).toEqual([]);
+		});
+	}
 });
 
-describe("issues tool: stage running claims the issue for the calling session", () => {
+describe("issues tool: running and needs-you claim the issue for the calling session", () => {
 	const SELF = "4f1c2a9e";
 	const PEER = "9d0e7b31";
 
@@ -293,6 +410,46 @@ describe("issues tool: stage running claims the issue for the calling session", 
 		expect(textOf(started)).toBe(`#${id} stage → running`);
 		expect(await claimOwner(tempDir, id)).toBe(SELF);
 	});
+
+	it("stage needs-you claims a free issue for a main session: the answer belongs to the session that asked", async () => {
+		const id = await addRunnable();
+
+		await runIssuesOp(tempDir, { op: "stage", id, stage: "needs-you", needs: "Approve it?" }, { sessionId: SELF });
+
+		expect(await claimOwner(tempDir, id)).toBe(SELF);
+	});
+
+	const filings: Array<{ stage: "running" | "needs-you" | "up-next"; needs?: string; claims: boolean }> = [
+		{ stage: "running", claims: true },
+		{ stage: "needs-you", needs: "Approve it?", claims: true },
+		{ stage: "up-next", claims: false },
+	];
+	for (const row of filings) {
+		it(`add with stage ${row.stage} files the issue in that stage, ${row.claims ? "claimed for a main session" : "unclaimed"}; a subagent call claims nothing`, async () => {
+			const add = {
+				op: "add",
+				category: "infra",
+				title: "Flaky deploy",
+				body: "B.",
+				stage: row.stage,
+				needs: row.needs,
+			} as const;
+
+			const fromMain = await runIssuesOp(tempDir, add, { sessionId: SELF });
+			const mainId = (fromMain.details as IssuesToolDetails).id!;
+			expect(fromMain.isError).toBeUndefined();
+			expect((await findIssueById(tempDir, mainId))?.frontmatter.stage).toBe(row.stage);
+			expect(await claimOwner(tempDir, mainId)).toBe(row.claims ? SELF : undefined);
+			if (row.claims) expect(textOf(fromMain)).toContain("claimed for this session");
+			else expect(textOf(fromMain)).not.toContain("claimed");
+
+			const fromSubagent = await runIssuesOp(tempDir, add);
+			const subagentId = (fromSubagent.details as IssuesToolDetails).id!;
+			expect((await findIssueById(tempDir, subagentId))?.frontmatter.stage).toBe(row.stage);
+			expect(await claimOwner(tempDir, subagentId)).toBeUndefined();
+			expect(textOf(fromSubagent)).not.toContain("claimed");
+		});
+	}
 
 	it("an issue another live session holds is still staged, keeps its holder, and the result warns", async () => {
 		const id = await addRunnable();

@@ -700,6 +700,126 @@ describe("issues store: stage validation on add", () => {
 	});
 });
 
+describe("issues store: `needs` rides only with an active needs-you issue", () => {
+	const NEEDS = "One table per tenant, or a shared table?";
+
+	async function waitingIssue(): Promise<number> {
+		const { record } = await addIssue(tempDir, {
+			category: "infra",
+			title: "Pick the storage layout",
+			body: "B.",
+			stage: "needs-you",
+			needs: NEEDS,
+		});
+		expect((await readFrontmatterOnDisk(record.filePath)).needs).toBe(NEEDS);
+		return record.id;
+	}
+
+	async function needsOnDisk(id: number): Promise<unknown> {
+		const onDisk = await readFrontmatterOnDisk((await findIssueById(tempDir, id))!.filePath);
+		return "needs" in onDisk ? onDisk.needs : undefined;
+	}
+
+	const departures: Array<{ name: string; leave: (id: number) => Promise<unknown> }> = [
+		{ name: "a stage move", leave: id => moveIssue(tempDir, id, { stage: "up-next" }) },
+		{ name: "archiveIssue", leave: id => archiveIssue(tempDir, id, { reason: "answered elsewhere" }) },
+		// The stage asked for is needs-you, but the terminal status archives it.
+		{
+			name: "a needs-you move onto a terminal status",
+			leave: id => moveIssue(tempDir, id, { stage: "needs-you", status: "fixed" }),
+		},
+		{ name: "a board reply", leave: id => replyToIssue(tempDir, id, "Use a shared table.") },
+		// The rewrite leaves the `needs` line in the file; only the stage changes.
+		{
+			name: "an issues:// rewrite that changes the stage",
+			leave: id =>
+				editVia(tempDir, id, frontmatter => {
+					frontmatter.stage = "running";
+				}),
+		},
+	];
+	for (const row of departures) {
+		it(`drops \`needs\` when the issue leaves needs-you through ${row.name}`, async () => {
+			const id = await waitingIssue();
+
+			await row.leave(id);
+
+			expect(await needsOnDisk(id)).toBeUndefined();
+		});
+	}
+
+	it("keeps `needs` while the issue stays needs-you: a move without text, an unrelated issues:// rewrite", async () => {
+		const id = await waitingIssue();
+
+		// The board's needs-you column move carries the stage only.
+		await moveIssue(tempDir, id, { stage: "needs-you" });
+		expect(await needsOnDisk(id)).toBe(NEEDS);
+
+		await editVia(tempDir, id, frontmatter => {
+			frontmatter.severity = "high";
+		});
+		expect(await needsOnDisk(id)).toBe(NEEDS);
+
+		await moveIssue(tempDir, id, { stage: "needs-you", needs: "Shared table, partitioned how?" });
+		expect(await needsOnDisk(id)).toBe("Shared table, partitioned how?");
+	});
+
+	it("archiveIssue drops the stage with the text, so unarchiving does not bring back a text-less needs-you", async () => {
+		const id = await waitingIssue();
+
+		const { record: archived } = await archiveIssue(tempDir, id, { reason: "answered elsewhere" });
+		const archivedOnDisk = await readFrontmatterOnDisk(archived.filePath);
+		expect("stage" in archivedOnDisk).toBe(false);
+		expect("needs" in archivedOnDisk).toBe(false);
+
+		const { record: restored } = await unarchiveIssue(tempDir, id);
+		expect(restored.archived).toBe(false);
+		const restoredOnDisk = await readFrontmatterOnDisk(restored.filePath);
+		expect("stage" in restoredOnDisk).toBe(false);
+		expect("needs" in restoredOnDisk).toBe(false);
+	});
+
+	it("the board can move an issue into needs-you without any text", async () => {
+		const { record } = await addIssue(tempDir, { category: "infra", title: "Flaky deploy", body: "B." });
+
+		const moved = await moveIssue(tempDir, record.id, { stage: "needs-you" });
+
+		expect(moved.frontmatter.stage).toBe("needs-you");
+		expect(await needsOnDisk(record.id)).toBeUndefined();
+	});
+
+	it("rejects a misplaced or blank `needs` on every write path without touching disk", async () => {
+		const id = await waitingIssue();
+		const filePath = (await findIssueById(tempDir, id))!.filePath;
+		const before = await Bun.file(filePath).text();
+
+		await expect(moveIssue(tempDir, id, { stage: "running", needs: "Approve it?" })).rejects.toThrow(
+			"Issue move rejected: `needs` goes only with stage `needs-you`.",
+		);
+		await expect(moveIssue(tempDir, id, { stage: "needs-you", needs: "  " })).rejects.toThrow(/non-empty string/);
+		await expect(
+			editVia(tempDir, id, frontmatter => {
+				frontmatter.needs = "";
+			}),
+		).rejects.toThrow(/issues:\/\/ write rejected: `needs` must be a non-empty string/);
+		expect(await Bun.file(filePath).text()).toBe(before);
+
+		await expect(
+			addIssue(tempDir, {
+				category: "infra",
+				title: "Misplaced",
+				body: "B.",
+				stage: "up-next",
+				needs: "Approve it?",
+			}),
+		).rejects.toThrow("Issue rejected: `needs` goes only with stage `needs-you`.");
+		await expect(
+			addIssue(tempDir, { category: "infra", title: "Blank", body: "B.", stage: "needs-you", needs: "\n" }),
+		).rejects.toThrow(/non-empty string/);
+		expect((await listIssueRecords(tempDir)).map(r => r.id)).toEqual([id]);
+	});
+});
+
 // A multi-line value exercising everything a YAML scalar can mangle: blank
 // lines, both quote styles, `key: value` and `# comment` lookalikes, a list
 // marker, a frontmatter fence, a backslash, a tab, and non-ASCII.
@@ -927,7 +1047,6 @@ describe("issues store: turn-end queue", () => {
 		expect([...(await listQueued(tempDir))]).toEqual([record.id]);
 	});
 
-	// `archiveIssue` keeps the stale `stage: up-next`, so only the archived check drops it.
 	const movedOn: Array<{ name: string; act: (id: number) => Promise<unknown> }> = [
 		{ name: "moved to needs-you", act: id => moveIssue(tempDir, id, { stage: "needs-you" }) },
 		{ name: "moved to awaiting-deploy", act: id => moveIssue(tempDir, id, { stage: "awaiting-deploy" }) },
