@@ -48,7 +48,9 @@ const addParams = z.object({
 	location: z.array(z.string()).describe("`path` or `path:line[-line]` references").optional(),
 	stage: z
 		.enum([...ISSUE_STAGES])
-		.describe("board state to file it in; `running` files and claims it for this session in one call")
+		.describe(
+			"board state to file it in; `running` (or `needs-you` with `needs`) files and claims it for this session in one call",
+		)
 		.optional(),
 	needs: z.string().describe("what you need from the user; only with `stage: 'needs-you'`").optional(),
 	extra: z.record(z.string(), z.unknown()).describe("extra frontmatter fields").optional(),

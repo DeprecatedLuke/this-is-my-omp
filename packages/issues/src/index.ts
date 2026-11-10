@@ -151,8 +151,9 @@ const PRESENCE_HEARTBEAT_MS = 30_000;
 /**
  * Whether this hand-off pass covers issue `id`: only an issue this session holds,
  * with a live claim, comes here. Nothing is handed out on its own — an issue
- * becomes a session's work when the user prompts that session to set it `running`,
- * which claims it — so a free issue, and one a dead session left behind, waits for
+ * becomes a session's work when the user prompts that session to set it `running`
+ * (or the session hands it to the user with `needs-you`), which claims it — so a
+ * free issue, and one a dead session left behind, waits for
  * that prompt instead of arriving as work.
  */
 async function mayTake(root: string, id: number, sessionId: string): Promise<boolean> {

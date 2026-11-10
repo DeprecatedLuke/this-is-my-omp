@@ -138,7 +138,7 @@ the reply waiting, and nothing is claimed on a session's behalf.
   heartbeat is respected while the claim itself is younger than the window, so a
   session that writes its presence and its claim in that order cannot lose the
   claim in between.
-- **`stage: running`** claims the issue for the calling session when it is free or
+- **`stage: running`** (and `stage: needs-you`) claims the issue for the calling session when it is free or
   stale. If another live session holds it, the stage is still set and the result
   appends `#<id> is held by another live session (<id>); two sessions on one issue
   will conflict, so tell the user.`

@@ -16,7 +16,8 @@
  *     seen/.watermark                     ISO time the inbox was first used
  *
  * No session takes an issue on its own: a claim is written only when the user
- * prompts a session to work the issue (it sets `stage: running`), and from then
+ * prompts a session to work the issue (it sets `stage: running`) or that session
+ * hands it to the user with `stage: needs-you`, and from then
  * on that issue's replies and requeues go to the claiming session alone.
  *
  * Every take is atomic so parallel sessions never share work: a reply is taken
