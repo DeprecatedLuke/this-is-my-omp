@@ -46,6 +46,7 @@ import {
 	type DoneStatus,
 	EMPTY_INBOX,
 	EMPTY_SEEN,
+	GLYPHS,
 	groupTone,
 	isUnseen,
 	LIST_GROUPS,
@@ -69,7 +70,7 @@ import { type IssuesWatcher, watchIssues } from "./watch";
 
 /** Width of the id column; wide enough for `#9999`. */
 const ID_WIDTH = 5;
-/** Width of the state chip column; wide enough for `✗ Finished · wontfix`. */
+/** Width of the state chip column; wide enough for a glyph, a space and `Finished · wontfix`. */
 const CHIP_WIDTH = 20;
 /** Width of the severity column; wide enough for `critical`. */
 const SEVERITY_WIDTH = 8;
@@ -781,7 +782,7 @@ export class BoardComponent implements Component {
 		const badges: string[] = [];
 		if (pendingReplies(this.#inbox, record.id).length > 0) badges.push(theme.fg("warning", "reply"));
 		const claim = claimedBy(this.#inbox, record.id);
-		if (claim !== undefined) badges.push(theme.fg("accent", `⧗ ${shortSession(claim)}`));
+		if (claim !== undefined) badges.push(theme.fg("accent", `${GLYPHS.claim} ${shortSession(claim)}`));
 		if (reportValue(record) !== undefined) badges.push(theme.fg("accent", "report"));
 		return badges.length === 0 ? "" : `${badges.join(theme.fg("dim", " · "))} `;
 	}

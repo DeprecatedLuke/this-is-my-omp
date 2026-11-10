@@ -57,14 +57,14 @@ local FALLBACK_STATES = {
 }
 
 -- The lowest priority hides first when the pane is narrow. The issue cell (state
--- icon, `#id`, title and badges; see `rowCells`) carries the top priority and is
+-- glyph, `#id`, title and badges; see `rowCells`) carries the top priority and is
 -- never dropped, so a row always says which issue it is and where it stands. It
 -- is the only column that grows (so the table fills the pane) and the only one
 -- that truncates. The rest follow in the terminal board's order and go as the
 -- pane narrows in the order the board can best afford to lose them: category,
--- age, severity, then the state's label (the icon's tooltip still names the
--- state). The heads are hidden by the plugin's CSS, as the terminal board has
--- none.
+-- age, severity, then the state's label (the issue cell's tooltip still names
+-- the state). The heads are hidden by the plugin's CSS, as the terminal board
+-- has none.
 local COLUMNS = {
 	{ id = "title", head = "Issue", grow = 1, truncate = "end", priority = 20 },
 	{ id = "state", head = "State", priority = 4 },
@@ -72,21 +72,6 @@ local COLUMNS = {
 	{ id = "category", head = "Category", priority = 1 },
 	{ id = "age", head = "Age", align = "end", priority = 2 },
 }
-
--- Tern's named icon per state (12px, in the row's tone), instead of the TUI's
--- text glyphs, which Tern draws unevenly (`||`, a half-filled `◐`).
--- Every name was checked against Tern's icon registry (`tern.chrome.program_icon`
--- rejects unknown names) and seen rendered in a row.
-local STATE_ICONS = {
-	["needs-you"] = "warning",
-	["up-next"] = "play",
-	["open"] = "ellipse",
-	["running"] = "running",
-	["awaiting-deploy"] = "rocket",
-	["deferred"] = "pause",
-}
-local DONE_ICONS = { fixed = "check", wontfix = "x", duplicate = "minus" }
-local FINISHED_ICON = "inbox"
 
 -- The row menu, in the order the terminal board offers the same actions.
 local MENU_ACTIONS = {
@@ -143,14 +128,10 @@ local function indexOf(rows, id)
 	return nil
 end
 
-local function stateIcon(row)
-	if row.group == "finished" then
-		return FINISHED_ICON
-	end
-	if row.group == "done" then
-		return DONE_ICONS[row.status] or "check"
-	end
-	return STATE_ICONS[row.state] or "todo"
+-- The row's state glyph (the API's `glyph`, a Nerd Font icon) as a span in the
+-- row's tone, padded with a no-break space (Tern collapses plain spaces).
+local function glyphSpan(row, tone)
+	return ui.span(tostring(row.glyph or "") .. "\u{00A0}", tone ~= "" and ("glyph " .. tone) or "glyph")
 end
 
 local function rowTone(row)
@@ -891,7 +872,8 @@ local function titleSpans(row)
 		badges[#badges + 1] = ui.span("reply", "warning")
 	end
 	if row.claim ~= nil then
-		badges[#badges + 1] = ui.span("⧗ " .. tostring(row.claim), "accent")
+		-- U+F4E3 nf-oct-hourglass, as `GLYPHS.claim` in src/model.ts.
+		badges[#badges + 1] = ui.span("\u{F4E3} " .. tostring(row.claim), "accent")
 	end
 	if row.report ~= nil then
 		badges[#badges + 1] = ui.span("report", "accent")
@@ -970,14 +952,13 @@ local function rowCells(row, widths)
 	-- in one column; a Done id recedes like its title.
 	local text = titleSpans(row)
 	table.insert(text, 1, ui.span(pad("#" .. tostring(row.id), widths.id) .. "\u{00A0}", settled and "strong muted" or "strong"))
-	-- The state icon leads the title cell: a cell's text truncates at its end and
-	-- never takes the icon with it, and the title column is never dropped, so the
-	-- icon shows at any width. The label is its tooltip and has its own column,
-	-- which goes before the title when the pane narrows.
+	-- The state glyph leads the title cell: a cell's text truncates at its end, and
+	-- the title column is never dropped, so the glyph shows at any width. The label
+	-- is the cell's tooltip and has its own column, which goes before the title
+	-- when the pane narrows.
+	table.insert(text, 1, glyphSpan(row, tone))
 	return {
 		{
-			icon = stateIcon(row),
-			tone = tone ~= "" and tone or nil,
 			text = text,
 			title = tostring(row.label or ""),
 		},
@@ -1084,15 +1065,12 @@ local function detailNode(state)
 		add("file", { ui.path(tostring(row.file), state.path) })
 	end
 
-	-- A card headed by the issue, with the row's state icon in the row's tone. (A
-	-- one-item `list` would carry the icon too, but a list is a scroll container of
-	-- its own, and the pane must have one scroller only.)
+	-- A card headed by the issue, led by the row's state glyph in the row's tone.
 	local tone = rowTone(row)
 	local children = {
 		ui.card(
-			{ ui.span("#" .. tostring(row.id) .. " ", "mono"), ui.span(tostring(row.title or ""), "strong") },
-			{ ui.kv(items) },
-			{ icon = stateIcon(row), tone = tone ~= "" and tone or nil }
+			{ glyphSpan(row, tone), ui.span("#" .. tostring(row.id) .. " ", "mono"), ui.span(tostring(row.title or ""), "strong") },
+			{ ui.kv(items) }
 		),
 	}
 	local replies = detail.replies or {}

@@ -121,23 +121,51 @@ export function stateTone(record: IssueRecord, group: ListGroupId): ThemeColor {
 	return stateIdTone(stateOf(record));
 }
 
+/**
+ * Nerd Font glyphs (Octicons, `nf-oct-*`; GitHub's issue icons where one fits).
+ * The TUI and the Tern block both draw these, so a terminal or block font
+ * without Nerd Font glyphs shows boxes.
+ */
+export const GLYPHS = {
+	finished: "\uf48d", // nf-oct-inbox
+	fixed: "\uf41d", // nf-oct-issue_closed
+	wontfix: "\uf517", // nf-oct-skip
+	duplicate: "\uf4c4", // nf-oct-duplicate
+	needsYou: "\uf421", // nf-oct-alert
+	upNext: "\uf500", // nf-oct-play
+	running: "\uf46a", // nf-oct-sync
+	awaitingDeploy: "\uf427", // nf-oct-rocket
+	deferred: "\uf43a", // nf-oct-clock
+	open: "\uf41b", // nf-oct-issue_opened
+	claim: "\uf4e3", // nf-oct-hourglass
+} as const;
+
 /** State glyph shown before the chip, in the chip's colour. */
 export function stateGlyph(record: IssueRecord, group: ListGroupId): string {
-	if (group === "finished") return "◆";
-	if (group === "done") return record.frontmatter.status === "fixed" ? "✓" : "✗";
+	if (group === "finished") return GLYPHS.finished;
+	if (group === "done") {
+		switch (record.frontmatter.status) {
+			case "fixed":
+				return GLYPHS.fixed;
+			case "duplicate":
+				return GLYPHS.duplicate;
+			default:
+				return GLYPHS.wontfix;
+		}
+	}
 	switch (stateOf(record)) {
 		case "needs-you":
-			return "!";
+			return GLYPHS.needsYou;
 		case "up-next":
-			return "▶";
+			return GLYPHS.upNext;
 		case "running":
-			return "◐";
+			return GLYPHS.running;
 		case "awaiting-deploy":
-			return "⇡";
+			return GLYPHS.awaitingDeploy;
 		case "deferred":
-			return "‖";
+			return GLYPHS.deferred;
 		default:
-			return "○";
+			return GLYPHS.open;
 	}
 }
 

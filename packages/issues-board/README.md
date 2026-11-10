@@ -10,13 +10,13 @@ issues underneath it.
  Finished 1 · Active 1 · Awaiting deploy 0 · Done 1
 ────────────────────────────────────────────────────────────────────────────────────────────────────
  ▌ Finished 1 ──────────────────────────────────────────────────────────────────────────────────────
- #130  ◆ Finished · wontfix medium   Drop the legacy CSV export endpoint                     api now
+ #130   Finished · wontfix medium   Drop the legacy CSV export endpoint                     api now
 
  ▌ Active 1 ────────────────────────────────────────────────────────────────────────────────────────
- #1    ▶ Up next            high     Retry the upload job on transient storage e… report  uploads 3h
+ #1     Up next            high     Retry the upload job on transient storage e… report  uploads 3h
 
  ▌ Done 1 ──────────────────────────────────────────────────────────────────────────────────────────
-▌#12   ✓ Done · fixed       critical Keep session tokens out of request logs                auth now
+▌#12    Done · fixed       critical Keep session tokens out of request logs                auth now
 ```
 
 **Finished** (archived and not yet looked at) is on top, then **Active** (the rest
@@ -79,6 +79,13 @@ then the age, so the title keeps its room.
 The chip is the issue's state: **Needs you**, **Up next**, **Open**,
 **Running**, **Awaiting deploy**, **Deferred**, or — for an archived issue —
 **Finished** / **Done** with its resolution (`fixed`, `wontfix`, `duplicate`).
+
+Each state's chip starts with a [Nerd Font](https://www.nerdfonts.com) Octicon
+(`nf-oct-inbox`, `nf-oct-issue_closed`, `nf-oct-skip`, `nf-oct-duplicate`,
+`nf-oct-alert`, `nf-oct-play`, `nf-oct-sync`, `nf-oct-rocket`, `nf-oct-clock`,
+`nf-oct-issue_opened`), and a claimed row's badge is `nf-oct-hourglass`, so the
+terminal's font must be a Nerd Font. `bin/omp-board api snapshot` hands the same
+character to a front end in each row's `glyph` field.
 
 An active issue's state comes from its frontmatter:
 
@@ -171,8 +178,9 @@ repo's `stage: up-next` cannot drive your agents.
 
 Rows with a pending reply show a `reply` badge, and the detail view lists each
 pending reply with the time it was queued. An issue claimed by an omp session
-shows `⧗` plus the first six characters of the session id (the detail view shows
-the whole id); claims are atomic, so two sessions cannot take the same issue.
+shows `\uf4e3` (`nf-oct-hourglass`) plus the first six characters of the session
+id (the detail view shows the whole id); claims are atomic, so two sessions
+cannot take the same issue.
 
 ### An issue follows the session you gave it to
 
@@ -242,7 +250,7 @@ A row is what the list draws:
 
 ```json
 {"id":12,"title":"…","category":"runtime","severity":"high","group":"active",
- "state":"up-next","label":"Up next","glyph":"▶","status":"open","stage":"up-next",
+ "state":"up-next","label":"Up next","glyph":"\uf500","status":"open","stage":"up-next",
  "archived":false,"updated":"2026-11-08T09:12:00.000Z","age":"3h","replies":0,
  "claim":"01a1ac","report":"https://reports.example.com/r/myrepo/board-api",
  "file":"/home/me/src/myrepo/.omp/issues/runtime/12-board-api.md"}
@@ -332,17 +340,20 @@ count in the group's colour — and each group opens with a `▌ Title count` ru
 that colour. Tern's table heads and row lines are hidden by the plugin's CSS, and
 its centred rule lines are replaced by a line drawn after the label.
 
-A row starts with one cell that never goes: the state's icon (one of Tern's named
-icons, in the state's colour, with the state as its tooltip), the bold `#id`, the
-title cut at its end, and then the `reply`, `⧗ xxxxxx` and `report` badges as
-coloured words. The state label, severity (coloured text; critical in bold, `—`
+A row starts with one cell that never goes: the state's [Nerd
+Font](https://www.nerdfonts.com) Octicon (the API's `glyph`, in the state's
+colour, with the state as its tooltip), the bold `#id`, the title cut at its end,
+and then the `reply`, `nf-oct-hourglass` claim and `report` badges as coloured
+words. The state label, severity (coloured text; critical in bold, `—`
 when unset), category and age follow in the terminal board's order, padded to the
 board's widest value so every group lines up. As the pane narrows they go
 category first, then age, severity and the label; a Done row recedes like the
-terminal's. The icons are `warning` needs you, `play` up next, `ellipse` open,
-`running` running, `rocket` awaiting deploy, `pause` deferred, `check` fixed, `x`
-wontfix, `minus` duplicate and `inbox` finished. The detail view heads its card
-with the same icon.
+terminal's. The glyphs are the terminal board's, so the pane's font must be a
+Nerd Font: `nf-oct-alert` needs you, `nf-oct-play` up next, `nf-oct-issue_opened`
+open, `nf-oct-sync` running, `nf-oct-rocket` awaiting deploy, `nf-oct-clock`
+deferred, `nf-oct-issue_closed` fixed, `nf-oct-skip` wontfix, `nf-oct-duplicate`
+duplicate and `nf-oct-inbox` finished. The detail view heads its card with the
+same glyph.
 
 Right-clicking a row offers the same states, Done with each resolution, Reply,
 Open file and — when the issue has one — Open report. The dock names the last
