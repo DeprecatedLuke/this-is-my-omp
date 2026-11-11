@@ -11,7 +11,7 @@ import type { EffectiveExtensionRoots } from "@oh-my-pi/pi-coding-agent/capabili
 import { discoverAgents } from "@oh-my-pi/pi-coding-agent/task/discovery";
 
 const PLUGIN_ROOT = path.resolve(import.meta.dir, "..");
-const SHIPPED = ["research", "solver", "tester"] as const;
+const SHIPPED = ["research", "solver", "tester", "designer"] as const;
 
 let cwd: string;
 let home: string;
@@ -36,7 +36,7 @@ async function names(extensionRoots: EffectiveExtensionRoots): Promise<string[]>
 }
 
 describe("omp-agents plugin", () => {
-	it("publishes solver, research, and tester to discovery", async () => {
+	it("publishes solver, research, tester, and designer to discovery", async () => {
 		const found = await names(roots([PLUGIN_ROOT]));
 		for (const name of SHIPPED) expect(found).toContain(name);
 	});
@@ -78,6 +78,7 @@ describe("omp-agents plugin", () => {
 		expect(modelOf("solver")).toEqual(["pi/solver"]);
 		expect(modelOf("research")).toEqual(["pi/research"]);
 		expect(modelOf("tester")).toEqual(["pi/task"]);
+		expect(modelOf("designer")).toEqual(["pi/designer"]);
 
 		const testerLevel: string | undefined = agents.find(agent => agent.name === "tester")?.thinkingLevel;
 		expect(testerLevel).toBe("high");
