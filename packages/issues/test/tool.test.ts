@@ -8,7 +8,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { claim, claimOwner, PRESENCE_STALE_MS, touchPresence } from "../src/inbox";
-import { findIssueById, getIssuesRoot, listIssues } from "../src/store";
+import { findIssueById, getIssuesRoot, listIssues, NEEDS_STAGE_ONLY } from "../src/store";
 import { type IssuesToolDetails, runIssuesOp } from "../src/tool";
 import { useTempAgentDir } from "./agent-dir";
 
@@ -292,10 +292,55 @@ describe("issues tool", () => {
 		expect(record?.frontmatter.needs).toBe("Approve moving CI to the arm runner?");
 	});
 
+	const deployStagings: Array<{ name: string; needs?: string; text: string; needsAfter?: string }> = [
+		{
+			name: "with the roll as `needs`",
+			needs: "Roll api v2.3.1 to prod",
+			text: "stage → awaiting-deploy\nNeeds: Roll api v2.3.1 to prod",
+			needsAfter: "Roll api v2.3.1 to prod",
+		},
+		{ name: "without `needs`", text: "stage → awaiting-deploy" },
+	];
+	for (const row of deployStagings) {
+		it(`stage awaiting-deploy ${row.name} is accepted and reports exactly the text it carries`, async () => {
+			const created = await runIssuesOp(tempDir, {
+				op: "add",
+				category: "infra",
+				title: "Flaky deploy",
+				body: "B.",
+			});
+			const id = (created.details as IssuesToolDetails).id!;
+
+			const staged = await runIssuesOp(tempDir, { op: "stage", id, stage: "awaiting-deploy", needs: row.needs });
+
+			expect(staged.isError).toBeUndefined();
+			expect(textOf(staged)).toBe(`#${id} ${row.text}`);
+			const record = await findIssueById(tempDir, id);
+			expect(record?.frontmatter.stage).toBe("awaiting-deploy");
+			expect(record?.frontmatter.needs).toBe(row.needsAfter);
+		});
+	}
+
+	it("add with stage awaiting-deploy records the `needs` text", async () => {
+		const created = await runIssuesOp(tempDir, {
+			op: "add",
+			category: "infra",
+			title: "Flaky deploy",
+			body: "B.",
+			stage: "awaiting-deploy",
+			needs: "Roll api v2.3.1 to prod",
+		});
+
+		expect(created.isError).toBeUndefined();
+		const record = await findIssueById(tempDir, (created.details as IssuesToolDetails).id!);
+		expect(record?.frontmatter.stage).toBe("awaiting-deploy");
+		expect(record?.frontmatter.needs).toBe("Roll api v2.3.1 to prod");
+	});
+
 	const stageRejections: Array<{
 		name: string;
 		params: { stage: "needs-you" | "running" | "none"; needs?: string };
-		error: RegExp;
+		error: RegExp | string;
 	}> = [
 		{
 			name: "needs-you without `needs`",
@@ -310,12 +355,12 @@ describe("issues tool", () => {
 		{
 			name: "`needs` with stage running",
 			params: { stage: "running", needs: "Approve it?" },
-			error: /`needs` goes only with stage `needs-you`/,
+			error: NEEDS_STAGE_ONLY,
 		},
 		{
 			name: "`needs` with stage none",
 			params: { stage: "none", needs: "Approve it?" },
-			error: /`needs` goes only with stage `needs-you`/,
+			error: NEEDS_STAGE_ONLY,
 		},
 	];
 	for (const row of stageRejections) {
@@ -346,7 +391,7 @@ describe("issues tool", () => {
 			needs?: string;
 			status?: "fixed";
 		};
-		error: RegExp;
+		error: RegExp | string;
 	}> = [
 		{
 			name: "needs-you without `needs`",
@@ -361,12 +406,12 @@ describe("issues tool", () => {
 		{
 			name: "`needs` with stage up-next",
 			params: { stage: "up-next", needs: "Approve it?" },
-			error: /`needs` goes only with stage `needs-you`/,
+			error: NEEDS_STAGE_ONLY,
 		},
 		{
 			name: "`needs` without a stage",
 			params: { needs: "Approve it?" },
-			error: /`needs` goes only with stage `needs-you`/,
+			error: NEEDS_STAGE_ONLY,
 		},
 		{
 			name: "a stage on a terminal status",

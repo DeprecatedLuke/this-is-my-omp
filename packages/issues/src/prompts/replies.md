@@ -3,5 +3,5 @@ The user replied on {{count}} issue(s) from `omp-board` that this session holds.
 
 {{replies}}
 
-Read each issue at its `issues://<id>` URL before acting on its reply, then do what the reply asks. These issues are already marked `stage: running` for you — when you stop, hand each one back with `stage: needs-you` and a `needs` line, `{"op":"stage","id":<id>,"stage":"needs-you","needs":"…"}`, saying what you need from the user, or archive it if the work is done.
+Read each issue at its `issues://<id>` URL before acting on its reply, then do what the reply asks. These issues are already marked `stage: running` for you — when you stop, hand each one back with `stage: needs-you` and a `needs` line, `{"op":"stage","id":<id>,"stage":"needs-you","needs":"…"}`, saying what you need from the user, or `stage: awaiting-deploy` with a `needs` line naming the exact roll when the code is done and only the rollout remains (even when it waits on the user's go), or archive it if the work is done.
 </system-reminder>

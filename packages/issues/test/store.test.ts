@@ -19,6 +19,7 @@ import {
 	listIssues,
 	listQueuedIssues,
 	moveIssue,
+	NEEDS_STAGE_ONLY,
 	normalizeCategory,
 	replyToIssue,
 	saveIssueContent,
@@ -700,18 +701,20 @@ describe("issues store: stage validation on add", () => {
 	});
 });
 
-describe("issues store: `needs` rides only with an active needs-you issue", () => {
+describe("issues store: `needs` rides only with an active needs-you or awaiting-deploy issue", () => {
 	const NEEDS = "One table per tenant, or a shared table?";
+	const ROLL = "Roll api v2.3.1 to prod";
 
-	async function waitingIssue(): Promise<number> {
+	async function waitingIssue(stage: "needs-you" | "awaiting-deploy" = "needs-you"): Promise<number> {
+		const needs = stage === "needs-you" ? NEEDS : ROLL;
 		const { record } = await addIssue(tempDir, {
 			category: "infra",
 			title: "Pick the storage layout",
 			body: "B.",
-			stage: "needs-you",
-			needs: NEEDS,
+			stage,
+			needs,
 		});
-		expect((await readFrontmatterOnDisk(record.filePath)).needs).toBe(NEEDS);
+		expect((await readFrontmatterOnDisk(record.filePath)).needs).toBe(needs);
 		return record.id;
 	}
 
@@ -720,7 +723,11 @@ describe("issues store: `needs` rides only with an active needs-you issue", () =
 		return "needs" in onDisk ? onDisk.needs : undefined;
 	}
 
-	const departures: Array<{ name: string; leave: (id: number) => Promise<unknown> }> = [
+	const departures: Array<{
+		name: string;
+		from?: "needs-you" | "awaiting-deploy";
+		leave: (id: number) => Promise<unknown>;
+	}> = [
 		{ name: "a stage move", leave: id => moveIssue(tempDir, id, { stage: "up-next" }) },
 		{ name: "archiveIssue", leave: id => archiveIssue(tempDir, id, { reason: "answered elsewhere" }) },
 		// The stage asked for is needs-you, but the terminal status archives it.
@@ -737,16 +744,106 @@ describe("issues store: `needs` rides only with an active needs-you issue", () =
 					frontmatter.stage = "running";
 				}),
 		},
+		// awaiting-deploy also takes text, but the question does not follow the issue there.
+		{
+			name: "a move to awaiting-deploy without text",
+			leave: id => moveIssue(tempDir, id, { stage: "awaiting-deploy" }),
+		},
+		{
+			name: "an issues:// rewrite to awaiting-deploy that removes the line",
+			leave: id =>
+				editVia(tempDir, id, frontmatter => {
+					frontmatter.stage = "awaiting-deploy";
+					delete frontmatter.needs;
+				}),
+		},
+		{
+			name: "a move to running",
+			from: "awaiting-deploy",
+			leave: id => moveIssue(tempDir, id, { stage: "running" }),
+		},
+		{
+			name: "archiveIssue",
+			from: "awaiting-deploy",
+			leave: id => archiveIssue(tempDir, id, { reason: "rolled" }),
+		},
 	];
 	for (const row of departures) {
-		it(`drops \`needs\` when the issue leaves needs-you through ${row.name}`, async () => {
-			const id = await waitingIssue();
+		const from = row.from ?? "needs-you";
+		it(`drops \`needs\` when the issue leaves ${from} through ${row.name}`, async () => {
+			const id = await waitingIssue(from);
 
 			await row.leave(id);
 
 			expect(await needsOnDisk(id)).toBeUndefined();
 		});
 	}
+
+	it("awaiting-deploy accepts a `needs` text through moveIssue, and an issues:// rewrite", async () => {
+		const { record } = await addIssue(tempDir, { category: "infra", title: "Flaky deploy", body: "B." });
+
+		const moved = await moveIssue(tempDir, record.id, { stage: "awaiting-deploy", needs: ROLL });
+		expect(moved.frontmatter.stage).toBe("awaiting-deploy");
+		expect(await needsOnDisk(record.id)).toBe(ROLL);
+
+		await editVia(tempDir, record.id, frontmatter => {
+			frontmatter.needs = "Roll api v2.3.2 to prod";
+		});
+		expect(await needsOnDisk(record.id)).toBe("Roll api v2.3.2 to prod");
+	});
+
+	const textlessDeploys: Array<{ name: string; enter: () => Promise<number> }> = [
+		{
+			name: "addIssue",
+			enter: async () =>
+				(
+					await addIssue(tempDir, {
+						category: "infra",
+						title: "Flaky deploy",
+						body: "B.",
+						stage: "awaiting-deploy",
+					})
+				).record.id,
+		},
+		{
+			name: "moveIssue",
+			enter: async () => {
+				const { record } = await addIssue(tempDir, { category: "infra", title: "Flaky deploy", body: "B." });
+				await moveIssue(tempDir, record.id, { stage: "awaiting-deploy" });
+				return record.id;
+			},
+		},
+		{
+			name: "an issues:// rewrite",
+			enter: async () => {
+				const { record } = await addIssue(tempDir, { category: "infra", title: "Flaky deploy", body: "B." });
+				await editVia(tempDir, record.id, frontmatter => {
+					frontmatter.stage = "awaiting-deploy";
+				});
+				return record.id;
+			},
+		},
+	];
+	for (const row of textlessDeploys) {
+		it(`awaiting-deploy without text is accepted through ${row.name} and carries no \`needs\``, async () => {
+			const id = await row.enter();
+
+			expect((await findIssueById(tempDir, id))!.frontmatter.stage).toBe("awaiting-deploy");
+			expect(await needsOnDisk(id)).toBeUndefined();
+		});
+	}
+
+	it("keeps the awaiting-deploy text across a same-stage move and a rewrite that drops the line", async () => {
+		const id = await waitingIssue("awaiting-deploy");
+
+		await moveIssue(tempDir, id, { stage: "awaiting-deploy" });
+		expect(await needsOnDisk(id)).toBe(ROLL);
+
+		await editVia(tempDir, id, frontmatter => {
+			delete frontmatter.needs;
+		});
+		expect(await needsOnDisk(id)).toBe(ROLL);
+	});
 
 	it("keeps `needs` while the issue stays needs-you: a move without text, an unrelated issues:// rewrite", async () => {
 		const id = await waitingIssue();
@@ -794,7 +891,12 @@ describe("issues store: `needs` rides only with an active needs-you issue", () =
 	];
 	for (const row of entries) {
 		it(`an issues:// rewrite of ${row.name} into needs-you must carry a \`needs\` text`, async () => {
-			const { record } = await addIssue(tempDir, { category: "infra", title: "Flaky deploy", body: "B.", extra: row.extra });
+			const { record } = await addIssue(tempDir, {
+				category: "infra",
+				title: "Flaky deploy",
+				body: "B.",
+				extra: row.extra,
+			});
 			const before = await Bun.file(record.filePath).text();
 
 			await expect(
@@ -843,7 +945,7 @@ describe("issues store: `needs` rides only with an active needs-you issue", () =
 		const before = await Bun.file(filePath).text();
 
 		await expect(moveIssue(tempDir, id, { stage: "running", needs: "Approve it?" })).rejects.toThrow(
-			"Issue move rejected: `needs` goes only with stage `needs-you`.",
+			`Issue move rejected: ${NEEDS_STAGE_ONLY}`,
 		);
 		await expect(moveIssue(tempDir, id, { stage: "needs-you", needs: "  " })).rejects.toThrow(/non-empty string/);
 		await expect(
@@ -861,7 +963,7 @@ describe("issues store: `needs` rides only with an active needs-you issue", () =
 				stage: "up-next",
 				needs: "Approve it?",
 			}),
-		).rejects.toThrow("Issue rejected: `needs` goes only with stage `needs-you`.");
+		).rejects.toThrow(`Issue rejected: ${NEEDS_STAGE_ONLY}`);
 		await expect(
 			addIssue(tempDir, { category: "infra", title: "Blank", body: "B.", stage: "needs-you", needs: "\n" }),
 		).rejects.toThrow(/non-empty string/);

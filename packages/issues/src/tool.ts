@@ -27,8 +27,10 @@ import {
 	listIssues,
 	moveIssue,
 	NEEDS_REQUIRED,
+	NEEDS_STAGE_ONLY,
 	normalizeCategory,
 	renderIssueListing,
+	stageCarriesNeeds,
 	unarchiveIssue,
 } from "./store";
 
@@ -53,7 +55,12 @@ const addParams = z.object({
 			"board state to file it in; `running` (or `needs-you` with `needs`) files and claims it for this session in one call",
 		)
 		.optional(),
-	needs: z.string().describe("what you need from the user; only with `stage: 'needs-you'`").optional(),
+	needs: z
+		.string()
+		.describe(
+			"what the issue waits on: the user's decision/approval/action with `needs-you`, the exact roll with `awaiting-deploy`",
+		)
+		.optional(),
 	extra: z.record(z.string(), z.unknown()).describe("extra frontmatter fields").optional(),
 });
 
@@ -75,11 +82,13 @@ const stageParams = z.object({
 	id: z.number().int().positive(),
 	stage: z
 		.enum([...ISSUE_STAGES, "none"])
-		.describe("board state to set; `none` clears it, `running` while you work, `needs-you` to hand it back"),
+		.describe(
+			"board state to set; `none` clears it, `running` while you work, `needs-you` to hand it back, `awaiting-deploy` when only the rollout remains",
+		),
 	needs: z
 		.string()
 		.describe(
-			"what you need from the user — the decision, approval or action; required with `needs-you`, shown at the top of the issue",
+			"what the issue waits on — the decision, approval or action with `needs-you` (required), the exact roll with `awaiting-deploy`; shown at the top of the issue",
 		)
 		.optional(),
 });
@@ -126,7 +135,7 @@ export interface IssuesToolDetails {
 	previousStatus?: IssueStatus;
 	/** Board stage the file carries after the op. */
 	stage?: IssueStage;
-	/** What the agent needs from the user, when the issue sits in `needs-you`. */
+	/** What the issue waits on, when it sits in `needs-you` or `awaiting-deploy`. */
 	needs?: string;
 	/** Stage the file carried before a `stage` op; absent when it had none. */
 	previousStage?: IssueStage;
@@ -207,16 +216,15 @@ function errorResult(op: IssuesToolParams["op"], error: unknown): AgentToolResul
 }
 
 /**
- * `needs-you` and `needs` go together: the board shows that text at the top of
- * the issue, so a hand-off without it is a question the user cannot read.
+ * The `needs` text goes with `needs-you` and `awaiting-deploy` only. In
+ * `needs-you` it is required: the board shows it at the top of the issue, so a
+ * hand-off without it is a question the user cannot read. In `awaiting-deploy`
+ * it is optional — the exact roll — and every other stage refuses it.
  * `subject` names the op so the message matches the surrounding rejections.
  */
 function assertNeedsPairing(stage: IssueStage | "none" | undefined, needs: string | undefined, subject: string): void {
-	if (stage === "needs-you") {
-		if (needs === undefined) throw new Error(`${subject}${NEEDS_REQUIRED}`);
-		return;
-	}
-	if (needs !== undefined) throw new Error(`${subject}\`needs\` goes only with stage \`needs-you\`.`);
+	if (stage === "needs-you" && needs === undefined) throw new Error(`${subject}${NEEDS_REQUIRED}`);
+	if (needs !== undefined && !stageCarriesNeeds(stage)) throw new Error(`${subject}${NEEDS_STAGE_ONLY}`);
 }
 
 async function executeAdd(

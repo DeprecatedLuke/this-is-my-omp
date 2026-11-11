@@ -873,20 +873,28 @@ export class BoardComponent implements Component {
 	}
 
 	/**
-	 * What the agent needs from the user: the first thing in the detail view, above
-	 * everything else. Every active `needs-you` issue gets the block; one without a
-	 * `needs` text (set from the board, or by a session older than the field) says
-	 * so, so the user is not left looking for an ask that is not there.
+	 * What the issue waits on: the first thing in the detail view, above
+	 * everything else. Every active `needs-you` issue gets the block; one without
+	 * a `needs` text (set from the board, or by a session older than the field)
+	 * says so, so the user is not left looking for an ask that is not there. An
+	 * `awaiting-deploy` issue gets a "Deploy" block, and only when the roll is
+	 * spelled out in its `needs` text.
 	 */
 	#detailNeeds(record: IssueRecord, width: number): string[] {
-		if (record.archived || record.frontmatter.stage !== "needs-you") return [];
-		const tone = stateIdTone("needs-you");
-		const lines = [` ${theme.bold(theme.fg(tone, "Needs you"))}`];
+		if (record.archived) return [];
+		const stage = record.frontmatter.stage;
+		if (stage !== "needs-you" && stage !== "awaiting-deploy") return [];
+		const tone = stateIdTone(stage);
+		const deploy = stage === "awaiting-deploy";
 		const needs = record.frontmatter.needs?.trim();
 		if (needs === undefined || needs === "") {
-			lines.push(` ${theme.fg("dim", "No ask recorded; read the issue below.")}`);
-			return lines;
+			if (deploy) return [];
+			return [
+				` ${theme.bold(theme.fg(tone, "Needs you"))}`,
+				` ${theme.fg("dim", "No ask recorded; read the issue below.")}`,
+			];
 		}
+		const lines = [` ${theme.bold(theme.fg(tone, deploy ? "Deploy" : "Needs you"))}`];
 		const wrapWidth = Math.max(20, width - 2);
 		// Line breaks the agent wrote are kept: each line wraps on its own, a blank
 		// one stays blank.

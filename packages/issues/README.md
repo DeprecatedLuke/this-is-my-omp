@@ -61,10 +61,10 @@ rejected like an out-of-enum `status`/`severity`.
 
 | Stage | Meaning |
 | --- | --- |
-| `needs-you` | Blocked on a human decision or action; carries `needs`. |
+| `needs-you` | Blocked on a human decision or action that is not a rollout; carries `needs`. |
 | `up-next` | The user wants it started next. |
 | `running` | Work in flight across sessions; prefer it over `in-progress` for long-running work. |
-| `awaiting-deploy` | Fixed in code, not deployed. |
+| `awaiting-deploy` | The code is done and only the rollout remains — canary, fleet roll, release, migration apply — even when the roll waits on the user's go; may carry `needs` naming the exact roll. |
 | `deferred` | Parked on purpose. |
 
 Omit it for plain open work. Moving an issue to Done clears the key, and an
@@ -72,26 +72,37 @@ archived issue never shows a stage.
 
 ### `needs`
 
-An optional `needs` key says what the agent needs from the user — the decision,
-approval or action — in plain prose. `omp-board` shows it at the top of the
-issue, so a `needs-you` issue without it is a question nobody can read.
+An optional `needs` key says what the issue waits on, in plain prose. It goes
+with two stages: `needs-you`, where it is the decision, approval or action the
+user must take, and `awaiting-deploy`, where it is the exact roll to run. An
+agent may set it on no other stage; every other write drops it. `omp-board` shows
+it at the top of the issue, so a `needs-you` issue without it is a question
+nobody can read, while an `awaiting-deploy` one may leave it out.
+
+Code done and only a rollout left — canary, fleet roll, release, migration apply —
+is `awaiting-deploy`, even when the roll waits on the user's go. Only an issue
+that also carries a real question stays `needs-you`, its text naming the roll.
 
 It is set together with the stage: `{"op":"stage","id":12,"stage":"needs-you",
 "needs":"Pick the storage layout: one table per tenant, or a shared table with a
-tenant column?"}`. The `stage` op requires it for `needs-you` and rejects it with
-any other stage; `add` takes both to file an issue that already asks something.
-An `issues://<id>.md` rewrite that newly sets `needs-you` is rejected without
-it; a rewrite of an issue already in `needs-you` that drops the `needs` line
-keeps the existing text. Only the board's own state key moves an issue there
-without text.
+tenant column?"}`, or `{"op":"stage","id":12,"stage":"awaiting-deploy","needs":"Canary
+on one cluster with task api:canary, then roll the fleet with task api:deploy."}`.
+The `stage` op requires it for `needs-you`, takes it
+for `awaiting-deploy`, and rejects it with any other stage; `add` takes both to
+file an issue that already asks something. An `issues://<id>.md` rewrite that
+newly sets `needs-you` is rejected without it; a rewrite that keeps the issue's
+stage keeps the existing text when the `needs` line is dropped. Only the board's
+own state key moves an issue to `needs-you` without text.
 
 The key carries an invariant: it exists only while an active issue sits in
-`needs-you`. Every other write drops it — a stage change, an archive, an
-`issues://<id>.md` rewrite, a board reply moving the issue to Up next, or the
-plugin's own hand-off marking it `running`. `writeIssueRecord` is the single
-write choke point, so no path can leave a stale question behind, and a move that
-does not carry `needs` keeps the existing text only when the issue was already
-`needs-you` (the board's state key sets the stage without touching the text).
+`needs-you` or `awaiting-deploy`. Every other write drops it — a stage change, an
+archive, an `issues://<id>.md` rewrite, a board reply moving the issue to Up next,
+or the plugin's own hand-off marking it `running`. `writeIssueRecord` is the
+single write choke point, so no path can leave a stale question behind. The text
+follows the stage, not the issue: a move or rewrite that changes the stage keeps
+the existing text only when no new one is supplied and the stage is unchanged
+(the board's state key sets the stage without touching the text), so a
+`needs-you` question never rides into `awaiting-deploy`.
 
 The plugin sets `running` itself when it hands a held issue back to its session —
 a requeued issue at turn end, a reply at prompt time — so the board shows Running
@@ -112,12 +123,14 @@ section (`src/prompts/board.md`): file an issue for work that outlives the turn,
 needs the user or waits on a deploy (`add` with `"stage":"running"` files and
 claims it in one call), set `stage: running` with the `stage` op before starting
 anything, hand a blocked issue back with `stage: needs-you` plus a `needs` line
-saying what the user must decide or do, set an issue `running` when their chat
+saying what the user must decide or do, leave an issue whose code is done in
+`awaiting-deploy` with its roll in `needs` (never `needs-you`, even when the roll
+waits on the user's go), set an issue `running` when their chat
 message answers it, use `running` rather than `in-progress` for unfinished work,
 and cite issues as `issues://<id>`. The in-progress reminder points the same way:
-an issue not finished this turn goes back to `open` with `stage: running` or
-`needs-you`. It only covers issues this session holds, so no session is told to
-finish another session's work.
+an issue not finished this turn goes back to `open` with `stage: running`,
+`needs-you` or `awaiting-deploy`. It only covers issues this session holds, so no
+session is told to finish another session's work.
 
 ### An issue follows the session you gave it to
 

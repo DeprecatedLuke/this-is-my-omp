@@ -1068,21 +1068,27 @@ local function detailNode(state)
 	-- A card headed by the issue, led by the row's state glyph in the row's tone.
 	local tone = rowTone(row)
 	local children = {}
-	-- What the agent needs from the user leads the view, above the issue card.
-	-- Every active needs-you issue gets the block; one without a `needs` text
-	-- (set from the board, or by a session older than the field) says so.
-	if row.stage == "needs-you" and not row.archived then
-		local needsTone = STATE_TONES["needs-you"]
-		local lines = { ui.text({ ui.span("Needs you", "strong " .. needsTone) }) }
+	-- What the issue waits on leads the view, above the issue card. A needs-you
+	-- issue always gets the block, saying so when no ask was recorded (set from
+	-- the board, or by a session older than the field); an awaiting-deploy issue
+	-- gets it only when its `needs` spells out the roll.
+	local stage = row.stage
+	if not row.archived and (stage == "needs-you" or stage == "awaiting-deploy") then
+		local needsTone = STATE_TONES[stage]
 		local needs = tostring(row.needs or "")
-		if needs:gsub("%s", "") == "" then
-			lines[#lines + 1] = ui.text({ ui.span("No ask recorded; read the issue below.", "muted") })
-		else
-			for line in needs:gmatch("[^\r\n]+") do
-				lines[#lines + 1] = ui.text({ ui.span(line, needsTone) })
+		local hasNeeds = needs:gsub("%s", "") ~= ""
+		if hasNeeds or stage == "needs-you" then
+			local title = stage == "awaiting-deploy" and "Deploy" or "Needs you"
+			local lines = { ui.text({ ui.span(title, "strong " .. needsTone) }) }
+			if hasNeeds then
+				for line in needs:gmatch("[^\r\n]+") do
+					lines[#lines + 1] = ui.text({ ui.span(line, needsTone) })
+				end
+			else
+				lines[#lines + 1] = ui.text({ ui.span("No ask recorded; read the issue below.", "muted") })
 			end
+			children[#children + 1] = ui.col(lines)
 		end
-		children[#children + 1] = ui.col(lines)
 	end
 	children[#children + 1] = ui.card(
 		{ glyphSpan(row, tone), ui.span("#" .. tostring(row.id) .. " ", "mono"), ui.span(tostring(row.title or ""), "strong") },

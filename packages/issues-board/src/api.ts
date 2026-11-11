@@ -73,7 +73,8 @@ export interface ApiRow {
 	glyph: string;
 	status: IssueStatus | null;
 	stage: IssueStage | null;
-	/** What the agent needs from the user; only on a `needs-you` issue. */
+	/** What the issue waits on: the user's ask on a `needs-you` issue, the exact
+	 *  roll on an `awaiting-deploy` one. */
 	needs: string | null;
 	archived: boolean;
 	updated: string | null;

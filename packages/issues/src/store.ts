@@ -47,8 +47,9 @@ export interface IssueFrontmatter {
 	severity?: IssueSeverity;
 	status?: IssueStatus;
 	stage?: IssueStage;
-	/** What the agent needs from the user (a decision, approval or action). Only
-	 *  an active `needs-you` issue carries it; every other write drops it. */
+	/** What the issue waits on: in `needs-you`, the user's decision, approval or
+	 *  action; in `awaiting-deploy`, the rollout to run. Only an active issue in
+	 *  one of those stages carries it; every other write drops it. */
 	needs?: string;
 	/** Report this issue is written up in: `report://<project>/<slug>` or an `http(s)://` URL. */
 	report?: string;
@@ -94,7 +95,7 @@ export interface AddIssueInput {
 	report?: string;
 	/** Board stage to file the issue in. A terminal `status` carries none. */
 	stage?: IssueStage;
-	/** What the agent needs from the user; only with `stage: needs-you`. */
+	/** What the issue waits on; only with `stage: needs-you` or `awaiting-deploy`. */
 	needs?: string;
 	location?: string[];
 	/** Extra frontmatter fields to merge in (e.g. `confidence`, `file_path`). */
@@ -537,8 +538,8 @@ export async function addIssue(cwd: string, input: AddIssueInput): Promise<AddIs
 	}
 	assertValidStage(input.stage, "Issue rejected: ");
 	assertValidNeeds(input.needs, "Issue rejected: ");
-	if (input.needs !== undefined && input.stage !== "needs-you") {
-		throw new Error("Issue rejected: `needs` goes only with stage `needs-you`.");
+	if (input.needs !== undefined && !stageCarriesNeeds(input.stage)) {
+		throw new Error(`Issue rejected: ${NEEDS_STAGE_ONLY}`);
 	}
 	const status = input.status ?? "open";
 	if (input.stage !== undefined && !ACTIVE_STATUSES.has(status)) {
@@ -647,6 +648,16 @@ function assertValidStage(stage: unknown, label: string): void {
 export const NEEDS_REQUIRED =
 	"`stage: needs-you` needs a `needs` text: what you need from the user — the decision, approval or action they must take.";
 
+/** Why a `needs` text on any stage but `needs-you` or `awaiting-deploy` is refused. */
+export const NEEDS_STAGE_ONLY = "`needs` goes only with stage `needs-you` or `awaiting-deploy`.";
+
+const NEEDS_STAGE: Readonly<Record<string, true>> = { "needs-you": true, "awaiting-deploy": true };
+
+/** True for the stages that may carry a `needs` text. */
+export function stageCarriesNeeds(stage: IssueStage | "none" | null | undefined): boolean {
+	return typeof stage === "string" && NEEDS_STAGE[stage] === true;
+}
+
 /**
  * Reject a `needs` that is not a non-empty string. It is prose, so there is no
  * enum to check — only that the agent actually said what it needs.
@@ -660,12 +671,12 @@ function assertValidNeeds(needs: unknown, label: string): void {
 /**
  * Enforce the board invariants every write must hold: an archived issue carries
  * no `stage` (so an unarchive never resurrects a stale one), and only an active
- * `needs-you` issue carries `needs`, so every other write drops the key. Trims
- * the text when it survives.
+ * `needs-you` or `awaiting-deploy` issue carries `needs`, so every other write
+ * drops the key. Trims the text when it survives.
  */
 function withBoardInvariants(frontmatter: IssueFrontmatter, archived: boolean): IssueFrontmatter {
 	if (archived) delete frontmatter.stage;
-	if (archived || frontmatter.stage !== "needs-you") {
+	if (archived || !stageCarriesNeeds(frontmatter.stage)) {
 		delete frontmatter.needs;
 		return frontmatter;
 	}
@@ -832,14 +843,16 @@ export async function saveIssueContent(cwd: string, id: number, content: string)
 	if (!nextArchived) {
 		delete frontmatter.archive_reason;
 	}
-	// `needs-you` carries its ask on this path too, as on the `stage` op: a
-	// rewrite that keeps the stage keeps the text when the edit dropped the line,
-	// and one that newly lands an issue there must say what it needs.
-	if (!nextArchived && frontmatter.stage === "needs-you" && frontmatter.needs === undefined) {
-		if (current.archived || current.frontmatter.stage !== "needs-you") {
+	// The `needs` text follows the stage on this path too, as on the `stage` op:
+	// a rewrite that keeps the stage keeps the text when the edit dropped the
+	// line, one that changes it carries only what the edit wrote, and one that
+	// newly lands an issue in `needs-you` must say what it needs.
+	if (!nextArchived && stageCarriesNeeds(frontmatter.stage) && frontmatter.needs === undefined) {
+		if (!current.archived && current.frontmatter.stage === frontmatter.stage) {
+			frontmatter.needs = current.frontmatter.needs;
+		} else if (frontmatter.stage === "needs-you") {
 			throw new Error(`issues:// write rejected: ${NEEDS_REQUIRED}`);
 		}
-		frontmatter.needs = current.frontmatter.needs;
 	}
 
 	const nextSlug = slugifyTitle(nextTitle);
@@ -932,7 +945,7 @@ export async function unarchiveIssue(
 export interface IssueMove {
 	/** Target stage; `null` clears the key. */
 	stage: IssueStage | null;
-	/** What the agent needs from the user; set with `stage: "needs-you"`. */
+	/** What the issue waits on; only with `stage: "needs-you"` or `"awaiting-deploy"`. */
 	needs?: string;
 	/** Target status. A terminal one archives, an active one unarchives. */
 	status?: IssueStatus;
@@ -950,8 +963,8 @@ export interface IssueMove {
 export async function moveIssue(cwd: string, id: number, move: IssueMove): Promise<IssueRecord> {
 	assertValidStage(move.stage, "Issue move rejected: ");
 	assertValidNeeds(move.needs, "Issue move rejected: ");
-	if (move.needs !== undefined && move.stage !== "needs-you") {
-		throw new Error("Issue move rejected: `needs` goes only with stage `needs-you`.");
+	if (move.needs !== undefined && !stageCarriesNeeds(move.stage)) {
+		throw new Error(`Issue move rejected: ${NEEDS_STAGE_ONLY}`);
 	}
 	if (move.status !== undefined && !ISSUE_STATUSES.has(move.status)) {
 		throw new Error(
@@ -975,11 +988,16 @@ export async function moveIssue(cwd: string, id: number, move: IssueMove): Promi
 	} else {
 		frontmatter.stage = move.stage;
 	}
-	// `needs` rides with `needs-you`: a move that carries it sets it, one that
-	// leaves the issue in `needs-you` keeps the existing text (the board's state
-	// key sets the stage without touching the text), and every other target drops
-	// it in the write below.
-	if (move.needs !== undefined) frontmatter.needs = move.needs;
+	// The `needs` text follows the stage: a move that carries it sets it, one
+	// that leaves the stage as it was keeps the existing text (the board's state
+	// key sets the stage without touching the text), one that changes the stage
+	// drops it so a needs-you question never rides into awaiting-deploy, and the
+	// write below drops it on every stage that cannot carry it.
+	if (move.needs !== undefined) {
+		frontmatter.needs = move.needs;
+	} else if (current.archived || frontmatter.stage !== current.frontmatter.stage) {
+		delete frontmatter.needs;
+	}
 	if (nextArchived) {
 		if (move.reason !== undefined && move.reason.trim().length > 0) {
 			frontmatter.archive_reason = move.reason.trim();
