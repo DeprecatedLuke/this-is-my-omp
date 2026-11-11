@@ -22,6 +22,7 @@ import type { AddIssueInput, IssueRecord, IssueSeverity, IssueStage, IssueStatus
 import {
 	addIssue,
 	archiveIssue,
+	CLOSING_REMARKS,
 	findIssueById,
 	ISSUE_STAGES,
 	listIssues,
@@ -67,7 +68,7 @@ const addParams = z.object({
 const archiveParams = z.object({
 	op: z.literal("archive"),
 	id: z.number().int().positive(),
-	reason: z.string().optional(),
+	reason: z.string().describe(`closing remarks: ${CLOSING_REMARKS}`),
 	status: statusEnum.describe("status to record on archive; default `fixed`").optional(),
 });
 
@@ -251,13 +252,27 @@ async function executeAdd(
 	return textResult(summarizeRecord("Created", record, extra), detailsFromRecord("add", record));
 }
 
+/**
+ * The closing remarks are the one thing the user reads when they review a
+ * finished issue, so an archive without them is refused rather than landing an
+ * empty block at the top. Trimmed; a whitespace-only `reason` counts as absent.
+ */
+function closingRemarks(reason: string | undefined): string {
+	const trimmed = (reason ?? "").trim();
+	if (trimmed === "") {
+		throw new Error(`Archive rejected: \`reason\` must carry the closing remarks: ${CLOSING_REMARKS}.`);
+	}
+	return trimmed;
+}
+
 async function executeArchive(
 	cwd: string,
 	params: Extract<IssuesToolParams, { op: "archive" }>,
 ): Promise<AgentToolResult<IssuesToolDetails>> {
 	const before = await findIssueById(cwd, params.id);
+	const reason = closingRemarks(params.reason);
 	const { record, wasArchived } = await archiveIssue(cwd, params.id, {
-		reason: params.reason,
+		reason,
 		status: params.status,
 	});
 	// The work is over, so the issue stops following any session: its claim goes,

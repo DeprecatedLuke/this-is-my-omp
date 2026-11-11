@@ -1068,26 +1068,34 @@ local function detailNode(state)
 	-- A card headed by the issue, led by the row's state glyph in the row's tone.
 	local tone = rowTone(row)
 	local children = {}
-	-- What the issue waits on leads the view, above the issue card. A needs-you
-	-- issue always gets the block, saying so when no ask was recorded (set from
-	-- the board, or by a session older than the field); an awaiting-deploy issue
-	-- gets it only when its `needs` spells out the roll.
+	-- The first block above the issue card: a bold title in the block's tone, then
+	-- its text below in that tone, one line per written line.
+	local function topBlock(title, blockTone, text)
+		local style = blockTone ~= "" and ("strong " .. blockTone) or "strong"
+		local lines = { ui.text({ ui.span(title, style) }) }
+		for line in text:gmatch("[^\r\n]+") do
+			lines[#lines + 1] = ui.text({ ui.span(line, blockTone) })
+		end
+		return ui.col(lines)
+	end
+	-- An archived issue opens with its closing remarks: how it ended. An active
+	-- needs-you issue leads with what it waits on, saying so when no ask was
+	-- recorded (set from the board, or by a session older than the field); an
+	-- awaiting-deploy issue gets only the roll its `needs` spells out.
 	local stage = row.stage
-	if not row.archived and (stage == "needs-you" or stage == "awaiting-deploy") then
+	local remarks = tostring(row.remarks or "")
+	if row.archived and remarks:gsub("%s", "") ~= "" then
+		children[#children + 1] = topBlock("Closing remarks", tone, remarks)
+	elseif not row.archived and (stage == "needs-you" or stage == "awaiting-deploy") then
 		local needsTone = STATE_TONES[stage]
 		local needs = tostring(row.needs or "")
-		local hasNeeds = needs:gsub("%s", "") ~= ""
-		if hasNeeds or stage == "needs-you" then
-			local title = stage == "awaiting-deploy" and "Deploy" or "Needs you"
-			local lines = { ui.text({ ui.span(title, "strong " .. needsTone) }) }
-			if hasNeeds then
-				for line in needs:gmatch("[^\r\n]+") do
-					lines[#lines + 1] = ui.text({ ui.span(line, needsTone) })
-				end
-			else
-				lines[#lines + 1] = ui.text({ ui.span("No ask recorded; read the issue below.", "muted") })
-			end
-			children[#children + 1] = ui.col(lines)
+		if needs:gsub("%s", "") ~= "" then
+			children[#children + 1] = topBlock(stage == "awaiting-deploy" and "Deploy" or "Needs you", needsTone, needs)
+		elseif stage == "needs-you" then
+			children[#children + 1] = ui.col({
+				ui.text({ ui.span("Needs you", "strong " .. needsTone) }),
+				ui.text({ ui.span("No ask recorded; read the issue below.", "muted") }),
+			})
 		end
 	end
 	children[#children + 1] = ui.card(

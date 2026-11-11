@@ -190,18 +190,45 @@ describe("IssuesProtocolHandler", () => {
 		);
 	});
 
-	it("a status edit through the file write archives the issue", async () => {
+	it("a status edit through the file write archives the issue and records the closing remarks", async () => {
 		const { record } = await addIssue(tempDir, { category: "security", title: "Closeable", body: "Body." });
 		const handler = InternalUrlRouter.instance().getHandler("issues");
 		if (!handler?.write) throw new Error("issues handler must define write");
 
-		const content = ["---", "title: Closeable", "category: security", "status: fixed", "---", "", "Body."].join("\n");
+		const content = [
+			"---",
+			"title: Closeable",
+			"category: security",
+			"status: fixed",
+			'archive_reason: "Patched in #12."',
+			"---",
+			"",
+			"Body.",
+		].join("\n");
 		const result = await handler.write(parseInternalUrl(`issues://${record.id}.md`), content, { cwd: tempDir });
 		expect(writeResultText(result)).toMatch(/archive/i);
 
 		const found = await findIssueById(tempDir, record.id);
 		expect(found?.archived).toBe(true);
 		expect(found?.frontmatter.status).toBe("fixed");
+		expect(found?.frontmatter.archive_reason).toBe("Patched in #12.");
+	});
+
+	it("rejects a closing file write without closing remarks and leaves the file byte-identical", async () => {
+		const { record } = await addIssue(tempDir, { category: "security", title: "Closeable", body: "Body." });
+		const handler = InternalUrlRouter.instance().getHandler("issues");
+		if (!handler?.write) throw new Error("issues handler must define write");
+		const before = await Bun.file(record.filePath).text();
+
+		const content = ["---", "title: Closeable", "category: security", "status: fixed", "---", "", "Body."].join("\n");
+		await expect(
+			handler.write(parseInternalUrl(`issues://${record.id}.md`), content, { cwd: tempDir }),
+		).rejects.toThrow(/issues:\/\/ write rejected: closing an issue needs closing remarks/);
+
+		const found = await findIssueById(tempDir, record.id);
+		expect(found?.archived).toBe(false);
+		expect(found?.filePath).toBe(record.filePath);
+		expect(await Bun.file(record.filePath).text()).toBe(before);
 	});
 
 	it("a title edit through the file write re-derives the slug", async () => {

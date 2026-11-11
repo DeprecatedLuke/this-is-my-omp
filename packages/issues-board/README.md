@@ -135,14 +135,16 @@ the target is **Up next**; see [Replies](#replies).
 | `q` / `ctrl+c` | quit |
 
 In the detail view `↑` `↓` / `j` `k` / page keys scroll, `g` / `G` jump to the
-top and bottom, `esc` goes back and `e` edits the file. An active `needs-you`
-issue leads the view with a `Needs you` line in the state's colour, above the
-fields and the body, and it scrolls with the rest. Below it is the issue's
-`needs` text in the same colour, or a dim "No ask recorded" line when the issue
-has none (moved there from the board, or by a session started before `needs`
-existed). An `awaiting-deploy` issue gets the same block headed `Deploy` in its
-own state colour when its `needs` names the roll, and no block when it does not.
-Archived issues never get one.
+top and bottom, `esc` goes back and `e` edits the file. The view leads with one
+block above the fields and the body, and it scrolls with the rest: a bold header
+in a state's colour, then its text below in that colour, line breaks kept. An
+archived issue with closing remarks leads with `Closing remarks` — how it ended —
+in its state's colour; one without them opens with no block. An active
+`needs-you` issue leads with a `Needs you` header and its `needs` text, or a dim
+"No ask recorded" line when the issue has none (moved there from the board, or
+by a session started before `needs` existed). An `awaiting-deploy` issue gets the
+same block headed `Deploy` in the deploy state's colour when its `needs` names
+the roll, and no block when it does not.
 
 The board reloads itself whenever `.omp/issues` or the issues inbox changes
 (debounced 150 ms), so an agent filing, editing or taking an issue shows up
@@ -258,7 +260,7 @@ A row is what the list draws:
 ```json
 {"id":12,"title":"…","category":"runtime","severity":"high","group":"active",
  "state":"up-next","label":"Up next","glyph":"\uf500","status":"open","stage":"up-next",
- "needs":null,"archived":false,"updated":"2026-11-08T09:12:00.000Z","age":"3h","replies":0,
+ "needs":null,"remarks":null,"archived":false,"updated":"2026-11-08T09:12:00.000Z","age":"3h","replies":0,
  "claim":"01a1ac","report":"https://reports.example.com/r/myrepo/board-api",
  "file":"/home/me/src/myrepo/.omp/issues/runtime/12-board-api.md"}
 ```
@@ -266,7 +268,9 @@ A row is what the list draws:
 `group` is the list group the issue is in (`finished`, `active`, `deploy`,
 `done`), `state`/`label`/`glyph` are the chip, `needs` is what the issue waits
 on — the user's ask on a `needs-you` issue, the roll on an `awaiting-deploy` one
-(`null` on every other stage) — `claim` is the first six
+(`null` on every other stage) — `remarks` is an archived issue's closing remarks,
+the text the detail view shows above its card (`null` on an active issue and on
+an archived one that recorded none), `claim` is the first six
 characters of the live session holding it (the detail view has the whole id in
 `claimFull`), and `report` is resolved through the `agent-reports` url like the
 TUI's link. `counts` and the rows are after `--filter`, like the TUI header, and
@@ -335,12 +339,16 @@ and it reloads live through `omp-board api wait`.
 | `esc` | clear the filter, cancel a prompt, or leave the detail view |
 
 The detail view is the issue's fields and its whole body as one markdown node,
-scrolled by Tern's own wheel and scrollbar. An active `needs-you` issue opens
-with a block above its card: a `Needs you` line and its `needs` text below it,
-both in the state's colour (a muted "No ask recorded" line when it has none), so
-what the user has to decide comes first. An `awaiting-deploy` issue opens with the
-same block headed `Deploy` in the deploy state's colour when its `needs` names the
-roll, and with nothing when it does not. No key scrolls the view, so its hints name
+scrolled by Tern's own wheel and scrollbar. It leads with one block above the
+card, reading `row.remarks` (an archived issue's closing remarks) or `row.needs`:
+a bold header in the row's colour and its text below in the same colour, one line
+per written line. An archived issue with closing remarks opens with `Closing
+remarks`; without them it opens with no block. An active `needs-you` issue opens
+with a `Needs you` line and its `needs` text below it, both in the state's colour
+(a muted "No ask recorded" line when it has none), so what the user has to decide
+comes first. An `awaiting-deploy` issue opens with the same block headed `Deploy`
+in the deploy state's colour when its `needs` names the roll, and with nothing
+when it does not. No key scrolls the view, so its hints name
 none: a block cannot drive Tern's surface scroll — `cx:frame` has no scroll op,
 `BlockCx` has no command call, and the window's `scroll_line_up` …
 `scroll_bottom` actions run without error and move nothing on a block (they scroll

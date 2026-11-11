@@ -171,7 +171,12 @@ describe("issues render: list", () => {
 describe("issues render: transitions and errors", () => {
 	it("shows the open → fixed transition for an archive", async () => {
 		const created = await addIssue({ title: "Privilege leak", severity: "high" });
-		const archived = await runIssuesOp(tempDir, { op: "archive", id: created.id!, status: "fixed" });
+		const archived = await runIssuesOp(tempDir, {
+			op: "archive",
+			id: created.id!,
+			status: "fixed",
+			reason: "Patched.",
+		});
 		const text = render(renderIssuesResult(archived, { expanded: false, isPartial: false }, theme)).join("\n");
 		expect(text).toContain(`#${created.id} Privilege leak`);
 		expect(text).toContain(badgeText("open"));
@@ -180,7 +185,7 @@ describe("issues render: transitions and errors", () => {
 	});
 
 	it("renders an error card carrying the failure message", async () => {
-		const failed = await runIssuesOp(tempDir, { op: "archive", id: 404 });
+		const failed = await runIssuesOp(tempDir, { op: "archive", id: 404, reason: "Patched." });
 		const text = render(renderIssuesResult(failed, { expanded: false, isPartial: false }, theme)).join("\n");
 		expect(text).toContain("Issue #404 not found");
 	});

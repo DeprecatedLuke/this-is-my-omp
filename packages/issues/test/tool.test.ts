@@ -186,7 +186,7 @@ describe("issues tool", () => {
 		}
 		// Archived issues carry no stage, so only `none` matches them.
 		const done = await runIssuesOp(tempDir, { op: "add", category: "infra", title: "Done work", body: "Body." });
-		await runIssuesOp(tempDir, { op: "archive", id: (done.details as IssuesToolDetails).id! });
+		await runIssuesOp(tempDir, { op: "archive", id: (done.details as IssuesToolDetails).id!, reason: "Shipped." });
 
 		const listed = async (stage: "running" | "up-next" | "none"): Promise<string[]> => {
 			const result = await runIssuesOp(tempDir, { op: "list", stage });
@@ -201,7 +201,7 @@ describe("issues tool", () => {
 	});
 
 	it("reports unknown ids as an error result instead of throwing", async () => {
-		const archived = await runIssuesOp(tempDir, { op: "archive", id: 999 });
+		const archived = await runIssuesOp(tempDir, { op: "archive", id: 999, reason: "Shipped." });
 		expect(archived.isError).toBe(true);
 		expect((archived.details as IssuesToolDetails).error).toMatch(/Issue #999 not found/);
 		expect(textOf(archived)).toMatch(/issues archive failed: Issue #999 not found/);
@@ -214,6 +214,32 @@ describe("issues tool", () => {
 		expect(staged.isError).toBe(true);
 		expect((staged.details as IssuesToolDetails).error).toMatch(/Issue #999 not found/);
 		expect(textOf(staged)).toMatch(/issues stage failed: Issue #999 not found/);
+	});
+
+	const badReasons: Array<{ name: string; reason: string | undefined }> = [
+		{ name: "missing", reason: undefined },
+		{ name: "empty", reason: "" },
+		{ name: "whitespace-only", reason: " \n\t " },
+	];
+	for (const { name, reason } of badReasons) {
+		it(`archive with a ${name} reason is an error result and leaves the issue active`, async () => {
+			const created = await runIssuesOp(tempDir, { op: "add", category: "infra", title: "Open", body: "Body." });
+			const id = (created.details as IssuesToolDetails).id!;
+			const params = { op: "archive", id, reason } as Parameters<typeof runIssuesOp>[1];
+			const result = await runIssuesOp(tempDir, params);
+			expect(result.isError).toBe(true);
+			expect(textOf(result)).toContain("Archive rejected: `reason` must carry the closing remarks");
+			const record = await findIssueById(tempDir, id);
+			expect(record?.archived).toBe(false);
+			expect(record?.frontmatter.status).toBe("open");
+		});
+	}
+
+	it("archive stores the closing remarks trimmed", async () => {
+		const created = await runIssuesOp(tempDir, { op: "add", category: "infra", title: "Open", body: "Body." });
+		const id = (created.details as IssuesToolDetails).id!;
+		await runIssuesOp(tempDir, { op: "archive", id, reason: "  Fixed in #8.\n" });
+		expect((await findIssueById(tempDir, id))?.frontmatter.archive_reason).toBe("Fixed in #8.");
 	});
 
 	it("refuses to stage an archived issue and leaves its file byte-identical", async () => {

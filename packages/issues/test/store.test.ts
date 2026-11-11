@@ -265,12 +265,91 @@ describe("issues store: lifecycle", () => {
 			const { record } = await addIssue(tempDir, { category: "security", title: `Close ${status}`, body: "B." });
 			const res = await editVia(tempDir, record.id, fm => {
 				fm.status = status;
+				fm.archive_reason = `Closed as ${status}.`;
 			});
 			expect(res.transitioned).toBe(true);
 			expect(res.record.archived).toBe(true);
 			expect(res.record.frontmatter.status).toBe(status);
 			expect(res.record.filePath).toContain(`${path.sep}.archive${path.sep}`);
 		}
+	});
+});
+
+describe("issues store: closing remarks on issues:// writes", () => {
+	it("closing with remarks archives and records them trimmed", async () => {
+		const { record } = await addIssue(tempDir, { category: "security", title: "Leak", body: "B." });
+		const res = await editVia(tempDir, record.id, fm => {
+			fm.status = "fixed";
+			fm.archive_reason = "  Shipped in #42.  ";
+		});
+		expect(res.record.archived).toBe(true);
+		expect((await findIssueById(tempDir, record.id))?.frontmatter.archive_reason).toBe("Shipped in #42.");
+	});
+
+	const rejected: Array<{ name: string; reason: unknown }> = [
+		{ name: "missing", reason: undefined },
+		{ name: "empty", reason: "" },
+		{ name: "whitespace", reason: "   " },
+	];
+	for (const { name, reason } of rejected) {
+		it(`rejects closing an active issue with ${name} remarks and leaves the file byte-identical`, async () => {
+			const { record } = await addIssue(tempDir, { category: "security", title: "Leak", body: "B." });
+			const before = await Bun.file(record.filePath).text();
+			await expect(
+				editVia(tempDir, record.id, fm => {
+					fm.status = "fixed";
+					fm.archive_reason = reason;
+				}),
+			).rejects.toThrow(/issues:\/\/ write rejected/);
+			const after = await findIssueById(tempDir, record.id);
+			expect(after?.archived).toBe(false);
+			expect(after?.filePath).toBe(record.filePath);
+			expect(await Bun.file(record.filePath).text()).toBe(before);
+		});
+	}
+
+	it("rejects a blank archive_reason on a rewrite of an already-archived issue", async () => {
+		const { record } = await addIssue(tempDir, { category: "security", title: "Leak", body: "B." });
+		const archived = await archiveIssue(tempDir, record.id, { reason: "Done." });
+		const before = await Bun.file(archived.record.filePath).text();
+		await expect(
+			editVia(tempDir, record.id, fm => {
+				fm.archive_reason = "  ";
+			}),
+		).rejects.toThrow(/issues:\/\/ write rejected/);
+		expect(await Bun.file(archived.record.filePath).text()).toBe(before);
+	});
+
+	it("an archived rewrite that drops the line keeps the existing remarks", async () => {
+		const { record } = await addIssue(tempDir, { category: "security", title: "Leak", body: "B." });
+		await archiveIssue(tempDir, record.id, { reason: "Shipped in #7." });
+		const res = await editVia(tempDir, record.id, fm => {
+			delete fm.archive_reason;
+			fm.severity = "low";
+		});
+		expect(res.record.archived).toBe(true);
+		const found = await findIssueById(tempDir, record.id);
+		expect(found?.frontmatter.severity).toBe("low");
+		expect(found?.frontmatter.archive_reason).toBe("Shipped in #7.");
+	});
+
+	it("an old archived issue without remarks still accepts rewrites", async () => {
+		const { record } = await addIssue(tempDir, { category: "security", title: "Leak", body: "B." });
+		await archiveIssue(tempDir, record.id);
+		const res = await editVia(tempDir, record.id, fm => {
+			fm.severity = "low";
+		});
+		expect(res.record.archived).toBe(true);
+		const found = await findIssueById(tempDir, record.id);
+		expect(found?.frontmatter.severity).toBe("low");
+		expect(found?.frontmatter.archive_reason).toBeUndefined();
+	});
+
+	it("the board's Done (moveIssue onto a terminal status) needs no remarks", async () => {
+		const { record } = await addIssue(tempDir, { category: "security", title: "Leak", body: "B." });
+		const moved = await moveIssue(tempDir, record.id, { stage: null, status: "fixed" });
+		expect(moved.archived).toBe(true);
+		expect(moved.frontmatter.status).toBe("fixed");
 	});
 });
 

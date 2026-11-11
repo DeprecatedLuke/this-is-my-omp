@@ -30,7 +30,7 @@ import {
 	wrapTextWithAnsi,
 } from "@oh-my-pi/pi-tui";
 import { formatKeyHint, formatKeyHints } from "@oh-my-pi/pi-tui/key-hint-format";
-import { getMarkdownTheme, theme } from "@oh-my-pi/pi-tui/theme";
+import { getMarkdownTheme, type ThemeColor, theme } from "@oh-my-pi/pi-tui/theme";
 import { inline, keyValueRows, pathLabel, sanitize, severityTone, statusTone, type Tone } from "@this-is-my-omp/render";
 import { inboxDir, loadSeen, type PendingReply } from "omp-issues/src/inbox";
 import { type IssueRecord, listIssueRecords } from "omp-issues/src/store";
@@ -856,10 +856,10 @@ export class BoardComponent implements Component {
 		if (!record) {
 			body = ["", theme.fg("dim", " This issue is no longer on disk.")];
 		} else {
-			const needs = this.#detailNeeds(record, width);
+			const top = this.#detailTop(record, width);
 			body = [
-				...needs,
-				...(needs.length > 0 ? [""] : []),
+				...top,
+				...(top.length > 0 ? [""] : []),
 				...this.#detailFields(record, width),
 				"",
 				...this.#detailBody(record, width),
@@ -873,15 +873,20 @@ export class BoardComponent implements Component {
 	}
 
 	/**
-	 * What the issue waits on: the first thing in the detail view, above
-	 * everything else. Every active `needs-you` issue gets the block; one without
-	 * a `needs` text (set from the board, or by a session older than the field)
-	 * says so, so the user is not left looking for an ask that is not there. An
-	 * `awaiting-deploy` issue gets a "Deploy" block, and only when the roll is
-	 * spelled out in its `needs` text.
+	 * The first block of the detail view, above the fields and the body. An
+	 * archived issue shows its closing remarks; an active `needs-you` issue shows
+	 * what it waits on and one without a `needs` text (set from the board, or by
+	 * a session older than the field) says so, so the user is not left looking
+	 * for an ask that is not there; an `awaiting-deploy` issue gets a "Deploy"
+	 * block, and only when the roll is spelled out in its `needs` text.
 	 */
-	#detailNeeds(record: IssueRecord, width: number): string[] {
-		if (record.archived) return [];
+	#detailTop(record: IssueRecord, width: number): string[] {
+		if (record.archived) {
+			const remarks = record.frontmatter.archive_reason?.trim();
+			if (remarks === undefined || remarks === "") return [];
+			const tone = record.frontmatter.status ? statusTone(record.frontmatter.status) : "dim";
+			return this.#detailTopBlock("Closing remarks", tone, remarks, width);
+		}
 		const stage = record.frontmatter.stage;
 		if (stage !== "needs-you" && stage !== "awaiting-deploy") return [];
 		const tone = stateIdTone(stage);
@@ -894,17 +899,22 @@ export class BoardComponent implements Component {
 				` ${theme.fg("dim", "No ask recorded; read the issue below.")}`,
 			];
 		}
-		const lines = [` ${theme.bold(theme.fg(tone, deploy ? "Deploy" : "Needs you"))}`];
+		return this.#detailTopBlock(deploy ? "Deploy" : "Needs you", tone, needs, width);
+	}
+
+	/** A bold header in `tone`, then its text below in the same tone, at the detail view's width. */
+	#detailTopBlock(header: string, tone: ThemeColor, text: string, width: number): string[] {
+		const lines = [` ${theme.bold(theme.fg(tone, header))}`];
 		const wrapWidth = Math.max(20, width - 2);
 		// Line breaks the agent wrote are kept: each line wraps on its own, a blank
 		// one stays blank.
-		for (const raw of sanitize(needs).split("\n")) {
-			const text = raw.trim();
-			if (text === "") {
+		for (const raw of sanitize(text).split("\n")) {
+			const line = raw.trim();
+			if (line === "") {
 				lines.push("");
 				continue;
 			}
-			for (const line of wrapTextWithAnsi(text, wrapWidth)) lines.push(` ${theme.fg(tone, line)}`);
+			for (const wrapped of wrapTextWithAnsi(line, wrapWidth)) lines.push(` ${theme.fg(tone, wrapped)}`);
 		}
 		return lines;
 	}

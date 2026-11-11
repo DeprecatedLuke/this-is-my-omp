@@ -53,6 +53,9 @@ export interface IssueFrontmatter {
 	needs?: string;
 	/** Report this issue is written up in: `report://<project>/<slug>` or an `http(s)://` URL. */
 	report?: string;
+	/** Closing remarks: the outcome, set when the issue is archived and shown at
+	 *  the top of it. Only an archived issue carries it; a move back drops it. */
+	archive_reason?: string;
 	location?: string[];
 	created?: string;
 	updated?: string;
@@ -357,6 +360,7 @@ function coerceFrontmatter(raw: Record<string, unknown>): IssueFrontmatter {
 	if (typeof raw.stage === "string") out.stage = raw.stage as IssueStage;
 	if (typeof raw.needs === "string") out.needs = raw.needs;
 	if (typeof raw.report === "string") out.report = raw.report;
+	if (typeof raw.archive_reason === "string") out.archive_reason = raw.archive_reason;
 	if (typeof raw.created === "string") out.created = raw.created;
 	if (typeof raw.updated === "string") out.updated = raw.updated;
 	const location = asStringArray(raw.location);
@@ -668,6 +672,20 @@ function assertValidNeeds(needs: unknown, label: string): void {
 	throw new Error(`${label}\`needs\` must be a non-empty string: say what you need from the user.`);
 }
 
+/** What closing remarks are, for every prompt and rejection that asks for them. */
+export const CLOSING_REMARKS =
+	"the outcome in one to three plain sentences (what shipped and where, or why it was dropped or duplicated), shown at the top of the issue";
+
+/** Why an agent write that closes an active issue without closing remarks is refused. */
+export const CLOSING_REMARKS_REQUIRED = `closing an issue needs closing remarks: set \`archive_reason\` (or use the \`archive\` op's \`reason\`) to ${CLOSING_REMARKS}.`;
+
+/** Reject an `archive_reason` that is not a non-empty string. */
+function assertValidArchiveReason(reason: unknown, label: string): void {
+	if (reason === undefined || reason === null) return;
+	if (typeof reason === "string" && reason.trim().length > 0) return;
+	throw new Error(`${label}\`archive_reason\` must be a non-empty string: the closing remarks, ${CLOSING_REMARKS}.`);
+}
+
 /**
  * Enforce the board invariants every write must hold: an archived issue carries
  * no `stage` (so an unarchive never resurrects a stale one), and only an active
@@ -804,6 +822,7 @@ function parseIssueFileContent(content: string, source: string): { frontmatter: 
 	assertValidStage(frontmatter.stage, "issues:// write rejected: ");
 	assertValidNeeds(frontmatter.needs, "issues:// write rejected: ");
 	assertValidReport(frontmatter.report, "issues:// write rejected: ");
+	assertValidArchiveReason(frontmatter.archive_reason, "issues:// write rejected: ");
 	frontmatter.title = title;
 	return { frontmatter, body: parsed.body };
 }
@@ -838,10 +857,18 @@ export async function saveIssueContent(cwd: string, id: number, content: string)
 		created: current.frontmatter.created ?? edited.created,
 		updated: nowIso(),
 	};
-	// `archive_reason` only makes sense while archived; drop it on the way back
-	// to active so the metadata layer stays consistent with `unarchiveIssue`.
+	// `archive_reason` holds the closing remarks, so it only makes sense while
+	// archived: drop it on the way back to active, as `unarchiveIssue` does. An
+	// agent write that closes an active issue must say how it ended; a rewrite
+	// of an archived one keeps the remarks when the edit dropped the line.
 	if (!nextArchived) {
 		delete frontmatter.archive_reason;
+	} else if (frontmatter.archive_reason !== undefined) {
+		frontmatter.archive_reason = frontmatter.archive_reason.trim();
+	} else if (!current.archived) {
+		throw new Error(`issues:// write rejected: ${CLOSING_REMARKS_REQUIRED}`);
+	} else if (typeof current.frontmatter.archive_reason === "string" && current.frontmatter.archive_reason.trim()) {
+		frontmatter.archive_reason = current.frontmatter.archive_reason;
 	}
 	// The `needs` text follows the stage on this path too, as on the `stage` op:
 	// a rewrite that keeps the stage keeps the text when the edit dropped the
@@ -849,7 +876,11 @@ export async function saveIssueContent(cwd: string, id: number, content: string)
 	// old line an agent left while flipping the stage is dropped; and one that
 	// newly lands an issue in `needs-you` must say what it needs.
 	const sameStage = !current.archived && current.frontmatter.stage === frontmatter.stage;
-	if (!sameStage && frontmatter.needs !== undefined && frontmatter.needs.trim() === current.frontmatter.needs?.trim()) {
+	if (
+		!sameStage &&
+		frontmatter.needs !== undefined &&
+		frontmatter.needs.trim() === current.frontmatter.needs?.trim()
+	) {
 		delete frontmatter.needs;
 	}
 	if (!nextArchived && stageCarriesNeeds(frontmatter.stage) && frontmatter.needs === undefined) {

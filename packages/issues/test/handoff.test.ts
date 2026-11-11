@@ -342,7 +342,7 @@ describe("issues plugin: an issue follows the session that set it running", () =
 	});
 
 	const archives: Array<{ name: string; archive: (a: Session, id: number) => Promise<unknown> }> = [
-		{ name: "the archive op", archive: (a, id) => a.tool({ op: "archive", id }) },
+		{ name: "the archive op", archive: (a, id) => a.tool({ op: "archive", id, reason: "Shipped." }) },
 		{
 			name: "a stage move onto a terminal status",
 			archive: async (a, id) => {

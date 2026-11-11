@@ -76,6 +76,9 @@ export interface ApiRow {
 	/** What the issue waits on: the user's ask on a `needs-you` issue, the exact
 	 *  roll on an `awaiting-deploy` one. */
 	needs: string | null;
+	/** Closing remarks: how an archived issue ended, shown at the top of it.
+	 *  Null on an active issue and on an archived one that recorded none. */
+	remarks: string | null;
 	archived: boolean;
 	updated: string | null;
 	age: string;
@@ -266,6 +269,7 @@ function rowFor(
 	reportBase: string | undefined,
 ): ApiRow {
 	const report = reportValue(record);
+	const remarks = record.archived ? record.frontmatter.archive_reason?.trim() : undefined;
 	return {
 		id: record.id,
 		title: record.frontmatter.title ?? "",
@@ -278,6 +282,7 @@ function rowFor(
 		status: record.frontmatter.status ?? null,
 		stage: record.frontmatter.stage ?? null,
 		needs: record.frontmatter.needs ?? null,
+		remarks: remarks === undefined || remarks === "" ? null : remarks,
 		archived: record.archived,
 		updated: record.frontmatter.updated ?? null,
 		age: relativeAge(record),

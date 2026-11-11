@@ -39,7 +39,7 @@ Registered as a discoverable extension tool, so the host mounts it as the
 | Op | Required | Optional | Effect |
 | --- | --- | --- | --- |
 | `add` | `category`, `title`, `body` | `severity`, `status`, `stage`, `needs`, `report`, `location[]`, `extra` | Allocates the next global id, writes `.omp/issues/<category>/<id>-<slug>.md`; `stage: "running"` (or `"needs-you"` with `needs`) files and claims it for the calling session in one call. |
-| `archive` | `id` | `reason`, `status` (default `fixed`) | Moves the file to `.omp/issues/.archive/<category>/`. |
+| `archive` | `id`, `reason` | `status` (default `fixed`) | Moves the file to `.omp/issues/.archive/<category>/`; `reason` is the closing remarks, recorded as `archive_reason` and shown at the top of the issue. |
 | `unarchive` | `id` | `status` (default `open`) | Restores the file to its category. |
 | `stage` | `id`, `stage` (plus `needs` when `needs-you`) | `needs` | Sets the issue's board column (`needs-you`, `up-next`, `running`, `awaiting-deploy`, `deferred`) or clears it with `none`; no read and no rewrite. |
 | `list` | — | `category`, `archived`, `severity`, `status`, `stage`, `query`, `limit` | Markdown listing; `details.listing` feeds the TUI. |
@@ -50,6 +50,18 @@ URL with the `write` tool: a `title` change re-derives the slug, a `category`
 change moves the file, and a terminal `status` (`fixed`/`wontfix`/`duplicate`)
 archives it. The rewrite is validated, so a malformed edit is rejected instead
 of corrupting the metadata layer.
+
+### Closing remarks
+
+An archived issue may carry `archive_reason`, the closing remarks the board shows
+at the top of the finished issue. An agent write that closes an active issue —
+the `archive` op, or an `issues://<id>.md` rewrite that sets `status` to
+`fixed`/`wontfix`/`duplicate` — must supply them: the op's `reason` is required,
+and the rewrite is rejected without a non-empty `archive_reason`. A rewrite of an
+already-archived issue that drops the line keeps the existing text, a blank value
+is rejected on any write, and every path back to active — `unarchive`, a
+non-terminal `status`, a board move — drops the key. The board's own Done asks for
+nothing: that move is the user's.
 
 ### `stage`
 
@@ -129,10 +141,11 @@ saying what the user must decide or do, leave an issue whose code is done in
 `awaiting-deploy` with its roll in `needs` (never `needs-you`, even when the roll
 waits on the user's go), set an issue `running` when their chat
 message answers it, use `running` rather than `in-progress` for unfinished work,
-and cite issues as `issues://<id>`. The in-progress reminder points the same way:
-an issue not finished this turn goes back to `open` with `stage: running`,
-`needs-you` or `awaiting-deploy`. It only covers issues this session holds, so no
-session is told to finish another session's work.
+close a finished issue with the `archive` op's `reason` — the closing remarks the
+board shows at the top of it — and cite issues as `issues://<id>`. The in-progress
+reminder points the same way: an issue not finished this turn goes back to `open`
+with `stage: running`, `needs-you` or `awaiting-deploy`. It only covers issues
+this session holds, so no session is told to finish another session's work.
 
 ### An issue follows the session you gave it to
 
