@@ -2,6 +2,7 @@
 	"name": "omp-issues-board",
 	"version": "0.1.0",
 	"private": true,
+	"license": "MIT",
 	"type": "module",
 	"description": "Terminal issue list for the omp-issues tracker (.omp/issues)",
 	"bin": {

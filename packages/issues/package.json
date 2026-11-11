@@ -2,6 +2,7 @@
 	"name": "omp-issues",
 	"version": "0.1.0",
 	"private": true,
+	"license": "MIT",
 	"type": "module",
 	"description": "omp plugin: project-local issue tracker under .omp/issues (issues tool, issues:// URLs, reviewer filing)",
 	"dependencies": {

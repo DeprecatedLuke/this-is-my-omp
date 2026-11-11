@@ -2,6 +2,7 @@
 	"name": "omp-git-checkpoint",
 	"version": "0.1.0",
 	"private": true,
+	"license": "MIT",
 	"type": "module",
 	"description": "omp plugin: local WIP checkpoint commits across the workspace's git repos",
 	"dependencies": {

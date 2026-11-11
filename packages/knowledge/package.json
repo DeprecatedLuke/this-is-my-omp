@@ -2,6 +2,7 @@
 	"name": "omp-knowledge",
 	"version": "0.1.0",
 	"private": true,
+	"license": "MIT",
 	"type": "module",
 	"description": "omp plugin: project knowledge base under .omp/knowledge — knowledge:// notes, /knowledge commands, and an end-of-turn reminder to catalogue what the session learned",
 	"scripts": {
