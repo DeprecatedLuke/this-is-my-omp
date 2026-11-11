@@ -28,8 +28,8 @@ import { buildPassObfuscator, createPassTools, NOTE_TOOLS } from "./tools";
 
 const DEFAULT_LAST = "30d";
 const STATE_VERSION = 1;
-/** Roles tried, in order, when no explicit model is given. */
-const KNOWLEDGE_MODEL_ROLES = ["task", "smol", "default", "slow"] as const;
+/** Roles tried, in order, when no explicit model is given. Never the calling agent's model. */
+const KNOWLEDGE_MODEL_ROLES = ["memory", "smol", "default"] as const;
 
 export interface BuildFromSessionsArgs {
 	/** `--last` window: `30d`, `72h`, `2w`, or `all`. Defaults to 30 days. */
@@ -319,15 +319,15 @@ function makeRecord(
 	};
 }
 
-/** Model for the export passes: `--model` when given, else the first available knowledge role. */
-export function resolveExportModel(
+/** Model for knowledge passes: `--model` when given, else the first available knowledge role. */
+export function resolveKnowledgeModel(
 	modelOverride: string | undefined,
 	settings: Settings,
 	available: readonly Model<Api>[],
 ): Model<Api> | undefined {
 	const models = [...available];
 	if (modelOverride) return resolveModelRoleValue(modelOverride, models, { settings }).model;
-	return resolveRoleSelection(KNOWLEDGE_MODEL_ROLES, settings, models)?.model ?? models[0];
+	return resolveRoleSelection(KNOWLEDGE_MODEL_ROLES, settings, models)?.model;
 }
 
 function createProductionExporter(
@@ -416,7 +416,7 @@ export async function buildFromSessions(
 	state = await alignStateWithKnowledgeRoot(cwd, statePath, state, write);
 	if (sessions.length === 0) return result;
 
-	const model = resolveExportModel(args.model, deps.settings, deps.availableModels);
+	const model = resolveKnowledgeModel(args.model, deps.settings, deps.availableModels);
 	if (!model) throw new Error("No model available for the knowledge build");
 	const apiKey = await deps.getApiKey(model);
 	if (!apiKey) throw new Error(`No API key available for ${model.provider}/${model.id}`);

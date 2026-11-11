@@ -7,7 +7,6 @@
  */
 import type { Api, Message, Model } from "@oh-my-pi/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { resolveModelRoleValue } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { InternalUrlRouter } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import type { SessionEntry, SessionMessageEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
@@ -18,7 +17,7 @@ import {
 	type KnowledgeCommand,
 	parseKnowledgeCommand,
 } from "./command-args";
-import { buildFromSessions, parseLastDurationMs } from "./exporter";
+import { buildFromSessions, parseLastDurationMs, resolveKnowledgeModel } from "./exporter";
 import { renderKnowledgeSection } from "./prompt";
 import { KnowledgeProtocolHandler } from "./protocol";
 import {
@@ -72,13 +71,9 @@ interface PassRuntime {
 	systemPrompt: string[];
 }
 
-/** Model + key + prompt for a pass; `modelOverride` is a role alias or `provider/model`. */
+/** Model + key + prompt for a pass; `modelOverride` is a role alias or `provider/model`, else memory > smol > default. */
 async function resolvePassRuntime(ctx: ExtensionContext, modelOverride?: string): Promise<PassRuntime | undefined> {
-	let model = ctx.model;
-	if (modelOverride) {
-		const settings = await hostSettings();
-		model = resolveModelRoleValue(modelOverride, ctx.modelRegistry.getAvailable(), { settings }).model ?? model;
-	}
+	const model = resolveKnowledgeModel(modelOverride, await hostSettings(), ctx.modelRegistry.getAvailable());
 	if (!model) return undefined;
 	const apiKey = await ctx.modelRegistry.getApiKey(model);
 	if (!apiKey) return undefined;

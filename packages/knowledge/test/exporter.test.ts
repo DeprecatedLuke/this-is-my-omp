@@ -73,7 +73,7 @@ async function createSession(id: string, options: SessionFixtureOptions = {}): P
 
 function deps(overrides: Partial<BuildFromSessionsDeps> = {}): BuildFromSessionsDeps {
 	return {
-		settings: Settings.isolated(),
+		settings: Settings.isolated({ modelRoles: { default: "mock/mock-model" } }),
 		cwd: tempDir,
 		availableModels: [MOCK_MODEL],
 		getApiKey: async () => "test-key",
