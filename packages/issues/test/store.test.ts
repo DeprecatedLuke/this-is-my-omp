@@ -757,6 +757,14 @@ describe("issues store: `needs` rides only with an active needs-you or awaiting-
 					delete frontmatter.needs;
 				}),
 		},
+		// The question line is left in place; it must not become the deploy text.
+		{
+			name: "an issues:// rewrite to awaiting-deploy that leaves the line",
+			leave: id =>
+				editVia(tempDir, id, frontmatter => {
+					frontmatter.stage = "awaiting-deploy";
+				}),
+		},
 		{
 			name: "a move to running",
 			from: "awaiting-deploy",
@@ -885,9 +893,16 @@ describe("issues store: `needs` rides only with an active needs-you or awaiting-
 		expect(await needsOnDisk(record.id)).toBeUndefined();
 	});
 
-	const entries: Array<{ name: string; extra?: Record<string, unknown> }> = [
+	const entries: Array<{
+		name: string;
+		extra?: Record<string, unknown>;
+		stage?: "awaiting-deploy";
+		needs?: string;
+	}> = [
 		{ name: "a plain open issue" },
 		{ name: "another stage", extra: { stage: "running" } },
+		// The deploy text left in place is a leftover, not a question; the new text replaces it.
+		{ name: "an awaiting-deploy issue with its text left in place", stage: "awaiting-deploy", needs: ROLL },
 	];
 	for (const row of entries) {
 		it(`an issues:// rewrite of ${row.name} into needs-you must carry a \`needs\` text`, async () => {
@@ -896,6 +911,8 @@ describe("issues store: `needs` rides only with an active needs-you or awaiting-
 				title: "Flaky deploy",
 				body: "B.",
 				extra: row.extra,
+				stage: row.stage,
+				needs: row.needs,
 			});
 			const before = await Bun.file(record.filePath).text();
 

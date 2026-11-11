@@ -845,10 +845,15 @@ export async function saveIssueContent(cwd: string, id: number, content: string)
 	}
 	// The `needs` text follows the stage on this path too, as on the `stage` op:
 	// a rewrite that keeps the stage keeps the text when the edit dropped the
-	// line, one that changes it carries only what the edit wrote, and one that
+	// line; one that changes it carries only text the edit wrote anew, so the
+	// old line an agent left while flipping the stage is dropped; and one that
 	// newly lands an issue in `needs-you` must say what it needs.
+	const sameStage = !current.archived && current.frontmatter.stage === frontmatter.stage;
+	if (!sameStage && frontmatter.needs !== undefined && frontmatter.needs.trim() === current.frontmatter.needs?.trim()) {
+		delete frontmatter.needs;
+	}
 	if (!nextArchived && stageCarriesNeeds(frontmatter.stage) && frontmatter.needs === undefined) {
-		if (!current.archived && current.frontmatter.stage === frontmatter.stage) {
+		if (sameStage) {
 			frontmatter.needs = current.frontmatter.needs;
 		} else if (frontmatter.stage === "needs-you") {
 			throw new Error(`issues:// write rejected: ${NEEDS_REQUIRED}`);

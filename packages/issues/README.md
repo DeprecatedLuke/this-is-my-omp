@@ -90,9 +90,11 @@ on one cluster with task api:canary, then roll the fleet with task api:deploy."}
 The `stage` op requires it for `needs-you`, takes it
 for `awaiting-deploy`, and rejects it with any other stage; `add` takes both to
 file an issue that already asks something. An `issues://<id>.md` rewrite that
-newly sets `needs-you` is rejected without it; a rewrite that keeps the issue's
-stage keeps the existing text when the `needs` line is dropped. Only the board's
-own state key moves an issue to `needs-you` without text.
+keeps the issue's stage keeps the existing text when the `needs` line is dropped.
+One that changes the stage keeps only text the edit changed: the old line left in
+place while flipping the stage is dropped, and a rewrite into `needs-you` without
+new text is rejected. Only the board's own state key moves an issue to
+`needs-you` without text.
 
 The key carries an invariant: it exists only while an active issue sits in
 `needs-you` or `awaiting-deploy`. Every other write drops it — a stage change, an
