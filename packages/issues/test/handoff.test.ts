@@ -341,38 +341,43 @@ describe("issues plugin: an issue follows the session that set it running", () =
 		expect(forB).not.toContain("Rotate the build cache");
 	});
 
-	const archives: Array<{ name: string; archive: (a: Session, id: number) => Promise<unknown> }> = [
-		{ name: "the archive op", archive: (a, id) => a.tool({ op: "archive", id, reason: "Shipped." }) },
-		{
-			name: "a stage move onto a terminal status",
-			archive: async (a, id) => {
-				// The status was set to fixed by hand in the active file; the next stage move archives it.
-				const filePath = (await findIssueById(tempDir, id))!.filePath;
-				const text = await Bun.file(filePath).text();
-				await Bun.write(filePath, text.replace(/^status: open$/m, "status: fixed"));
-				const moved = await a.tool({ op: "stage", id, stage: "needs-you", needs: "Ship it?" });
-				expect(moved.details?.archived).toBe(true);
-			},
-		},
-	];
-	for (const row of archives) {
-		it(`archiving through ${row.name} releases the claim, so the issue's replies reach nobody`, async () => {
-			const { a, b } = await twoSessions();
-			const id = await plainIssue("Pin the toolchain");
-			await start(a, id, "session-a");
+	it("archiving through the archive op releases the claim, so the issue's replies reach nobody", async () => {
+		const { a, b } = await twoSessions();
+		const id = await plainIssue("Pin the toolchain");
+		await start(a, id, "session-a");
 
-			await row.archive(a, id);
-			expect(await claimOwner(tempDir, id)).toBeUndefined();
+		await a.tool({ op: "archive", id, reason: "Shipped." });
+		expect(await claimOwner(tempDir, id)).toBeUndefined();
 
-			// A reply reopens the archived issue; with no holder it waits for a prompt.
-			await replyToIssue(tempDir, id, "Use the version from the lockfile.");
-			for (const session of [a, b]) {
-				expect(await session.prompt()).toBeUndefined();
-				expect(await session.turnEnd()).toBeUndefined();
-			}
-			expect(await pendingTexts()).toEqual(["Use the version from the lockfile."]);
-		});
-	}
+		// A reply reopens the archived issue; with no holder it waits for a prompt.
+		await replyToIssue(tempDir, id, "Use the version from the lockfile.");
+		for (const session of [a, b]) {
+			expect(await session.prompt()).toBeUndefined();
+			expect(await session.turnEnd()).toBeUndefined();
+		}
+		expect(await pendingTexts()).toEqual(["Use the version from the lockfile."]);
+	});
+
+	it("a stage move that would close a hand-set fixed issue without remarks fails and keeps the claim and the file", async () => {
+		const { a } = await twoSessions();
+		const id = await plainIssue("Pin the toolchain");
+		await start(a, id, "session-a");
+		const filePath = (await findIssueById(tempDir, id))!.filePath;
+		const text = await Bun.file(filePath).text();
+		const fixed = text.replace(/^status: open$/m, "status: fixed");
+		expect(fixed).not.toBe(text);
+		await Bun.write(filePath, fixed);
+
+		const moved = await a.tool({ op: "stage", id, stage: "needs-you", needs: "Ship it?" });
+		expect(moved.isError).toBe(true);
+		expect(moved.content.map(c => (c.type === "text" ? c.text : "")).join("")).toContain(
+			"closing an issue needs closing remarks",
+		);
+		expect(await claimOwner(tempDir, id)).toBe("session-a");
+		const after = await findIssueById(tempDir, id);
+		expect(after?.archived).toBe(false);
+		expect(await Bun.file(filePath).text()).toBe(fixed);
+	});
 
 	it("a session that moves to a new id drops the old id's claims, and the new id is handed nothing", async () => {
 		const { a, b } = await twoSessions();

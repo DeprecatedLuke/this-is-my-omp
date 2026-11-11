@@ -471,7 +471,7 @@ end
 
 -- Actions -----------------------------------------------------------------
 
-local function moveIssue(state, target, doneStatus)
+local function moveIssue(state, target, doneStatus, remarks)
 	local id = state.selected
 	if id == nil then
 		return
@@ -483,8 +483,15 @@ local function moveIssue(state, target, doneStatus)
 			render(state)
 			return
 		end
+		if remarks == nil or remarks:gsub("%s", "") == "" then
+			setStatus(state, "Closing remarks need text", "error")
+			render(state)
+			return
+		end
 		args[#args + 1] = "--status"
 		args[#args + 1] = doneStatus
+		args[#args + 1] = "--remarks"
+		args[#args + 1] = remarks
 	end
 	api(state, "move", args, nil, function(result)
 		local data, failure = parse(result)
@@ -680,6 +687,46 @@ local function replyKey(state, key)
 	return true
 end
 
+-- Closing an issue needs closing remarks, so a Done status pick opens this
+-- input first and the move waits until it has text.
+local function startRemarks(state, doneStatus)
+	state.pendingStatus = doneStatus
+	state.mode = "remarks"
+	state.input = ""
+	render(state)
+end
+
+local function remarksKey(state, key)
+	local name = key.name
+	if name == "enter" then
+		local text = state.input
+		local doneStatus = state.pendingStatus
+		state.mode = "none"
+		state.input = ""
+		state.pendingStatus = nil
+		if text:gsub("%s", "") == "" then
+			setStatus(state, "Closing remarks need text", "error")
+			render(state)
+			return true
+		end
+		moveIssue(state, "done", doneStatus, text)
+		return true
+	end
+	if name == "escape" then
+		state.mode = "none"
+		state.input = ""
+		state.pendingStatus = nil
+		render(state)
+		return true
+	end
+	if name == "backspace" then
+		state.input = state.input:sub(1, math.max(#state.input - 1, 0))
+		return true
+	end
+	appendInput(state, key)
+	return true
+end
+
 local function doneKey(state, key)
 	local name = key.name
 	if name == "escape" then
@@ -687,18 +734,15 @@ local function doneKey(state, key)
 		return true
 	end
 	if name == "f" then
-		state.mode = "none"
-		moveIssue(state, "done", "fixed")
+		startRemarks(state, "fixed")
 		return true
 	end
 	if name == "w" then
-		state.mode = "none"
-		moveIssue(state, "done", "wontfix")
+		startRemarks(state, "wontfix")
 		return true
 	end
 	if name == "d" then
-		state.mode = "none"
-		moveIssue(state, "done", "duplicate")
+		startRemarks(state, "duplicate")
 		return true
 	end
 	return true
@@ -715,6 +759,9 @@ local function handleKey(state, key)
 	end
 	if state.mode == "reply" then
 		return replyKey(state, key)
+	end
+	if state.mode == "remarks" then
+		return remarksKey(state, key)
 	end
 	if state.mode == "done" then
 		return doneKey(state, key)
@@ -1182,6 +1229,12 @@ local function dockNode(state)
 	elseif state.mode == "reply" then
 		children[#children + 1] = ui.text({
 			ui.span("reply #" .. tostring(state.selected or "?"), "accent"),
+			ui.span("  " .. state.input),
+			ui.span("▏", "accent"),
+		})
+	elseif state.mode == "remarks" then
+		children[#children + 1] = ui.text({
+			ui.span("closing remarks #" .. tostring(state.selected or "?"), "accent"),
 			ui.span("  " .. state.input),
 			ui.span("▏", "accent"),
 		})

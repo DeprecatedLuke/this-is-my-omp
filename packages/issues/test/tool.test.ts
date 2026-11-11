@@ -228,7 +228,7 @@ describe("issues tool", () => {
 			const params = { op: "archive", id, reason } as Parameters<typeof runIssuesOp>[1];
 			const result = await runIssuesOp(tempDir, params);
 			expect(result.isError).toBe(true);
-			expect(textOf(result)).toContain("Archive rejected: `reason` must carry the closing remarks");
+			expect(textOf(result)).toContain("Archive rejected: closing an issue needs closing remarks");
 			const record = await findIssueById(tempDir, id);
 			expect(record?.archived).toBe(false);
 			expect(record?.frontmatter.status).toBe("open");

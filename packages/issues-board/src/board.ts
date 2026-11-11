@@ -171,6 +171,8 @@ export class BoardComponent implements Component {
 	#reply: { id: number; input: Input } | undefined;
 	#showAllDone = false;
 	#donePrompt: { id: number } | undefined;
+	/** Open closing-remarks input: the issue, the picked Done status, and its input. */
+	#remarks: { id: number; status: DoneStatus; input: Input } | undefined;
 	#status: { text: string; tone: Tone } | undefined;
 	#watchers: IssuesWatcher[] = [];
 	/**
@@ -366,12 +368,12 @@ export class BoardComponent implements Component {
 		void this.#applyMove(entry.record.id, state);
 	}
 
-	async #applyMove(id: number, state: BoardStateId, doneStatus?: DoneStatus): Promise<void> {
+	async #applyMove(id: number, state: BoardStateId, doneStatus?: DoneStatus, remarks?: string): Promise<void> {
 		const record = this.#records.find(candidate => candidate.id === id);
 		if (!record || this.#moving) return;
 		this.#moving = true;
 		try {
-			const { message } = await moveIssueTo(this.#root, record, state, doneStatus);
+			const { message } = await moveIssueTo(this.#root, record, state, doneStatus, remarks);
 			this.#status = { text: message, tone: "success" };
 			// The issue's group may have changed; the cursor stays at its row.
 			await this.#reload();
@@ -500,6 +502,10 @@ export class BoardComponent implements Component {
 			this.#replyKey(data);
 			return;
 		}
+		if (this.#remarks) {
+			this.#remarksKey(data);
+			return;
+		}
 		if (this.#filtering) {
 			this.#filterKey(data);
 			return;
@@ -587,7 +593,44 @@ export class BoardComponent implements Component {
 		const picked = DONE_STATUSES.find(status => status[0] === char);
 		if (!picked) return;
 		this.#donePrompt = undefined;
-		void this.#applyMove(prompt.id, "done", picked);
+		this.#startRemarks(prompt.id, picked);
+	}
+
+	/**
+	 * Ask how the issue ended. Closing an active issue needs closing remarks, on
+	 * the board's own Done too, so the status pick is followed by this input.
+	 */
+	#startRemarks(id: number, status: DoneStatus): void {
+		const input = this.#remarks?.input ?? new Input();
+		input.prompt = `${theme.fg("accent", `#${id}`)} ${theme.fg("muted", "closing remarks")} `;
+		input.placeholder = "what was done, or why it's closed";
+		input.setValue("");
+		this.#remarks = { id, status, input };
+		this.#ui.requestRender();
+	}
+
+	#remarksKey(data: string): void {
+		const remarks = this.#remarks;
+		if (!remarks) return;
+		if (matchesKey(data, "escape")) {
+			this.#remarks = undefined;
+			this.#ui.requestRender();
+			return;
+		}
+		if (matchesKey(data, "enter")) {
+			const text = remarks.input.getValue().trim();
+			// The store refuses a blank reason, so say so here and keep the input
+			// open rather than losing a picked status to a failed write.
+			if (text === "") {
+				this.#setStatus("error", "closing remarks need text");
+				return;
+			}
+			this.#remarks = undefined;
+			void this.#applyMove(remarks.id, "done", remarks.status, text);
+			return;
+		}
+		remarks.input.handleInput(data);
+		this.#ui.requestRender();
 	}
 
 	#filterKey(data: string): void {
@@ -829,6 +872,16 @@ export class BoardComponent implements Component {
 				width,
 				Ellipsis.Omit,
 			);
+		}
+		if (this.#remarks) {
+			// While the input is open the status line is its own: an error from a
+			// blank `enter` takes the hint's place, so it shows without closing it.
+			const hint =
+				this.#status !== undefined
+					? ` ${theme.fg(this.#status.tone, inline(this.#status.text))}`
+					: ` ${theme.fg("dim", `${formatKeyHint("enter")} done · ${formatKeyHint("escape")} cancel`)}`;
+			const line = this.#remarks.input.render(Math.max(20, width - visibleWidth(hint)))[0] ?? "";
+			return truncateToWidth(`${line}${hint}`, width, Ellipsis.Omit);
 		}
 		if (this.#reply) {
 			const hint = ` ${theme.fg("dim", `${formatKeyHint("enter")} queue · ${formatKeyHint("escape")} cancel`)}`;

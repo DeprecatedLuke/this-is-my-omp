@@ -686,6 +686,13 @@ function assertValidArchiveReason(reason: unknown, label: string): void {
 	throw new Error(`${label}\`archive_reason\` must be a non-empty string: the closing remarks, ${CLOSING_REMARKS}.`);
 }
 
+/** The trimmed closing remarks for a write that closes an active issue; blank is refused. */
+function closingRemarksOrThrow(reason: string | undefined, label: string): string {
+	const trimmed = reason?.trim() ?? "";
+	if (trimmed === "") throw new Error(`${label}${CLOSING_REMARKS_REQUIRED}`);
+	return trimmed;
+}
+
 /**
  * Enforce the board invariants every write must hold: an archived issue carries
  * no `stage` (so an unarchive never resurrects a stale one), and only an active
@@ -913,7 +920,10 @@ export interface ArchiveResult {
 	wasArchived: boolean;
 }
 
-/** Move an active issue to the archive (no-op if already archived). */
+/**
+ * Move an active issue to the archive (no-op if already archived). Closing an
+ * active issue needs closing remarks in `reason`, stored trimmed as `archive_reason`.
+ */
 export async function archiveIssue(
 	cwd: string,
 	id: number,
@@ -924,15 +934,14 @@ export async function archiveIssue(
 	if (current.archived) {
 		return { record: current, wasArchived: true };
 	}
+	const reason = closingRemarksOrThrow(options.reason, "Archive rejected: ");
 
 	const frontmatter: IssueFrontmatter = {
 		...current.frontmatter,
 		status: options.status ?? "fixed",
 		updated: nowIso(),
+		archive_reason: reason,
 	};
-	if (options.reason !== undefined && options.reason.trim().length > 0) {
-		frontmatter.archive_reason = options.reason.trim();
-	}
 
 	const record = await writeIssueRecord(
 		cwd,
@@ -985,7 +994,7 @@ export interface IssueMove {
 	needs?: string;
 	/** Target status. A terminal one archives, an active one unarchives. */
 	status?: IssueStatus;
-	/** Recorded as `archive_reason` when the move lands in the archive. */
+	/** Recorded as `archive_reason`; required when the move closes an active issue. */
 	reason?: string;
 }
 
@@ -1035,7 +1044,9 @@ export async function moveIssue(cwd: string, id: number, move: IssueMove): Promi
 		delete frontmatter.needs;
 	}
 	if (nextArchived) {
-		if (move.reason !== undefined && move.reason.trim().length > 0) {
+		if (!current.archived) {
+			frontmatter.archive_reason = closingRemarksOrThrow(move.reason, "Issue move rejected: ");
+		} else if (move.reason !== undefined && move.reason.trim().length > 0) {
 			frontmatter.archive_reason = move.reason.trim();
 		}
 	} else {

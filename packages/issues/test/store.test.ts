@@ -199,7 +199,7 @@ describe("issues store: lifecycle", () => {
 			title: "X",
 			body: "B.",
 		});
-		await archiveIssue(tempDir, record.id);
+		await archiveIssue(tempDir, record.id, { reason: "Fixed." });
 		const second = await archiveIssue(tempDir, record.id);
 		expect(second.wasArchived).toBe(true);
 		expect(second.record.archived).toBe(true);
@@ -334,8 +334,16 @@ describe("issues store: closing remarks on issues:// writes", () => {
 	});
 
 	it("an old archived issue without remarks still accepts rewrites", async () => {
+		// Built without the store: issues archived before remarks were required sit in `.archive` with no reason.
 		const { record } = await addIssue(tempDir, { category: "security", title: "Leak", body: "B." });
-		await archiveIssue(tempDir, record.id);
+		const text = await Bun.file(record.filePath).text();
+		const closed = text.replace(/^status: open$/m, "status: fixed");
+		expect(closed).not.toBe(text);
+		const archivedDir = path.join(getIssuesRoot(tempDir), ".archive", "security");
+		await fs.mkdir(archivedDir, { recursive: true });
+		await Bun.write(path.join(archivedDir, path.basename(record.filePath)), closed);
+		await fs.unlink(record.filePath);
+
 		const res = await editVia(tempDir, record.id, fm => {
 			fm.severity = "low";
 		});
@@ -345,11 +353,37 @@ describe("issues store: closing remarks on issues:// writes", () => {
 		expect(found?.frontmatter.archive_reason).toBeUndefined();
 	});
 
-	it("the board's Done (moveIssue onto a terminal status) needs no remarks", async () => {
+	for (const { name, reason } of rejected) {
+		it(`the board's Done (moveIssue onto a terminal status) with ${name} remarks is rejected and leaves the file byte-identical`, async () => {
+			const { record } = await addIssue(tempDir, { category: "security", title: "Leak", body: "B." });
+			const before = await Bun.file(record.filePath).text();
+			await expect(
+				moveIssue(tempDir, record.id, { stage: null, status: "fixed", reason: reason as string | undefined }),
+			).rejects.toThrow(/Issue move rejected: closing an issue needs closing remarks/);
+			const after = await findIssueById(tempDir, record.id);
+			expect(after?.archived).toBe(false);
+			expect(after?.filePath).toBe(record.filePath);
+			expect(await Bun.file(record.filePath).text()).toBe(before);
+		});
+
+		it(`archiveIssue on an active issue with ${name} remarks is rejected and leaves the file byte-identical`, async () => {
+			const { record } = await addIssue(tempDir, { category: "security", title: "Leak", body: "B." });
+			const before = await Bun.file(record.filePath).text();
+			await expect(archiveIssue(tempDir, record.id, { reason: reason as string | undefined })).rejects.toThrow(
+				/Archive rejected: closing an issue needs closing remarks/,
+			);
+			const after = await findIssueById(tempDir, record.id);
+			expect(after?.archived).toBe(false);
+			expect(await Bun.file(record.filePath).text()).toBe(before);
+		});
+	}
+
+	it("the board's Done with remarks archives and records them trimmed", async () => {
 		const { record } = await addIssue(tempDir, { category: "security", title: "Leak", body: "B." });
-		const moved = await moveIssue(tempDir, record.id, { stage: null, status: "fixed" });
+		const moved = await moveIssue(tempDir, record.id, { stage: null, status: "fixed", reason: "  Shipped in #9.  " });
 		expect(moved.archived).toBe(true);
 		expect(moved.frontmatter.status).toBe("fixed");
+		expect((await findIssueById(tempDir, record.id))?.frontmatter.archive_reason).toBe("Shipped in #9.");
 	});
 });
 
@@ -416,14 +450,14 @@ describe("issues store: empty category directory pruning", () => {
 		const correctnessA = await addIssue(tempDir, { category: "correctness", title: "Keep A", body: "B." });
 		await addIssue(tempDir, { category: "correctness", title: "Keep B", body: "B." });
 
-		await archiveIssue(tempDir, security.record.id);
+		await archiveIssue(tempDir, security.record.id, { reason: "Fixed." });
 		// security had a single issue → its active dir is gone.
 		expect(await dirExists(path.join(root, "security"))).toBe(false);
 		// correctness still holds an issue → untouched.
 		expect(await dirExists(path.join(root, "correctness"))).toBe(true);
 
 		// Archiving one of two issues in a category must NOT prune it.
-		await archiveIssue(tempDir, correctnessA.record.id);
+		await archiveIssue(tempDir, correctnessA.record.id, { reason: "Fixed." });
 		expect(await dirExists(path.join(root, "correctness"))).toBe(true);
 		// The issues root itself is never pruned (anchors the counter + archive).
 		expect(await dirExists(root)).toBe(true);
@@ -456,7 +490,7 @@ describe("issues store: empty category directory pruning", () => {
 	it("removes the archived category dir and the archive root when the last archived issue is unarchived", async () => {
 		const archiveRoot = path.join(getIssuesRoot(tempDir), ".archive");
 		const { record } = await addIssue(tempDir, { category: "security", title: "Round trip", body: "B." });
-		await archiveIssue(tempDir, record.id);
+		await archiveIssue(tempDir, record.id, { reason: "Fixed." });
 		expect(await dirExists(path.join(archiveRoot, "security"))).toBe(true);
 
 		await unarchiveIssue(tempDir, record.id);
@@ -469,8 +503,8 @@ describe("issues store: empty category directory pruning", () => {
 		const archiveRoot = path.join(getIssuesRoot(tempDir), ".archive");
 		const a = await addIssue(tempDir, { category: "security", title: "A", body: "B." });
 		const b = await addIssue(tempDir, { category: "correctness", title: "B", body: "B." });
-		await archiveIssue(tempDir, a.record.id);
-		await archiveIssue(tempDir, b.record.id);
+		await archiveIssue(tempDir, a.record.id, { reason: "Fixed." });
+		await archiveIssue(tempDir, b.record.id, { reason: "Fixed." });
 
 		await unarchiveIssue(tempDir, a.record.id);
 		// security archive dir emptied → pruned, but correctness archive remains,
@@ -812,7 +846,7 @@ describe("issues store: `needs` rides only with an active needs-you or awaiting-
 		// The stage asked for is needs-you, but the terminal status archives it.
 		{
 			name: "a needs-you move onto a terminal status",
-			leave: id => moveIssue(tempDir, id, { stage: "needs-you", status: "fixed" }),
+			leave: id => moveIssue(tempDir, id, { stage: "needs-you", status: "fixed", reason: "Answered." }),
 		},
 		{ name: "a board reply", leave: id => replyToIssue(tempDir, id, "Use a shared table.") },
 		// The rewrite leaves the `needs` line in the file; only the stage changes.
@@ -1394,7 +1428,7 @@ describe("issues store: multi-line frontmatter values", () => {
 
 		await moveIssue(tempDir, record.id, { stage: "running" });
 		expect(await notesNow()).toEqual([TRICKY_TEXT, TRICKY_TEXT]);
-		await archiveIssue(tempDir, record.id);
+		await archiveIssue(tempDir, record.id, { reason: "Fixed." });
 		expect(await notesNow()).toEqual([TRICKY_TEXT, TRICKY_TEXT]);
 		await unarchiveIssue(tempDir, record.id);
 		expect(await notesNow()).toEqual([TRICKY_TEXT, TRICKY_TEXT]);
@@ -1439,7 +1473,7 @@ describe("issues store: report link", () => {
 				() => moveIssue(tempDir, record.id, { stage: "running" }),
 				() => moveIssue(tempDir, record.id, { stage: null, status: "fixed", reason: "done" }),
 				() => unarchiveIssue(tempDir, record.id),
-				() => archiveIssue(tempDir, record.id, { status: "wontfix" }),
+				() => archiveIssue(tempDir, record.id, { status: "wontfix", reason: "Dropped." }),
 				() => replyToIssue(tempDir, record.id, "Reopen it."),
 			];
 			for (const step of steps) {

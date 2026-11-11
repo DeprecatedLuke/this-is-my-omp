@@ -202,13 +202,19 @@ export function categoryTone(category: string): ThemeColor {
 }
 
 /**
- * The store move a state key means. Done needs the terminal status the prompt
- * picked; moving an archived issue to any active state also reopens it.
+ * The store move a state key means. Done needs the terminal status and closing
+ * remarks the prompts collected; moving an archived issue to any active state
+ * also reopens it.
  */
-export function moveFor(state: BoardStateId, record: IssueRecord, doneStatus?: DoneStatus): IssueMove {
+export function moveFor(
+	state: BoardStateId,
+	record: IssueRecord,
+	doneStatus?: DoneStatus,
+	remarks?: string,
+): IssueMove {
 	if (state === "done") {
 		if (!doneStatus) throw new Error(`Moving #${record.id} to Done needs a terminal status`);
-		return { stage: null, status: doneStatus };
+		return { stage: null, status: doneStatus, reason: remarks };
 	}
 	const target: IssueMove = state === "open" ? { stage: null, status: "open" } : { stage: state };
 	return record.archived ? { ...target, status: "open" } : target;

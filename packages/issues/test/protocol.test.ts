@@ -117,7 +117,7 @@ describe("IssuesProtocolHandler", () => {
 			title: "Quick fix",
 			body: "B.",
 		});
-		await archiveIssue(tempDir, record.id);
+		await archiveIssue(tempDir, record.id, { reason: "Fixed." });
 
 		const found = await InternalUrlRouter.instance().resolve(`issues://${record.filename}`, {
 			cwd: tempDir,

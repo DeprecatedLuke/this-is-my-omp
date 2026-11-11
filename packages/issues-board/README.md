@@ -105,7 +105,12 @@ An active issue's state comes from its frontmatter:
 | `4` Running | `stage: running` |
 | `5` Awaiting deploy | `stage: awaiting-deploy` |
 | `6` Deferred | `stage: deferred` |
-| `7` Done | clears `stage`, `status:` fixed, wontfix or duplicate (the prompt picks one) |
+| `7` Done | clears `stage`, `status:` fixed, wontfix or duplicate, then the closing remarks |
+
+Done asks twice: the status prompt picks `f` fixed, `w` wontfix or `d` duplicate,
+then the `#<id> closing remarks` input asks how the issue ended. `enter` on an
+empty input shows an error and keeps the input open; `esc` cancels the whole
+Done. The text is stored as `archive_reason` and leads the issue's detail view.
 
 Setting an archived issue to any active state also writes `status: open`, so it
 returns to the active side of the tracker. The board never writes
@@ -128,7 +133,7 @@ the target is **Up next**; see [Replies](#replies).
 | `1`–`7` | set the state; the list footer names each key's state in its colour |
 | `enter` | open the issue's detail view (fields, report link, markdown body) |
 | `r` | reply to the issue (list or detail view) |
-| `esc` | clear the filter, cancel a reply, or leave the detail view |
+| `esc` | clear the filter, cancel a reply or a Done, or leave the detail view |
 | `e` | edit the issue file in nvim |
 | `/` | filter by substring over title, category and body |
 | `a` | toggle Done between the last 7 days and every archived issue |
@@ -234,7 +239,7 @@ omp-board api snapshot --filter deploy --all-done --root ~/src/myrepo
 omp-board api detail 12 --root ~/src/myrepo
 omp-board api seen 12 --root ~/src/myrepo
 omp-board api move 12 up-next --root ~/src/myrepo
-omp-board api move 12 done --status fixed --root ~/src/myrepo
+omp-board api move 12 done --status fixed --remarks 'shipped in 4f2a1c' --root ~/src/myrepo
 printf 'please check the staging log\n' | omp-board api reply 12 --root ~/src/myrepo
 omp-board api wait --since <fingerprint> --timeout-ms 25000 --root ~/src/myrepo
 omp-board api report-url report://myrepo/board-api --root ~/src/myrepo
@@ -246,7 +251,7 @@ omp-board api report-url report://myrepo/board-api --root ~/src/myrepo
 | `wait --since FP [--timeout-ms N]` | block until the board changes, then the full snapshot |
 | `detail ID` | one issue: its row, frontmatter, pending replies and body |
 | `seen ID` | record that the user looked at the issue as of its `updated` |
-| `move ID STATE [--status fixed\|wontfix\|duplicate]` | the `1`–`7` keys; Done needs a terminal status |
+| `move ID STATE [--status fixed\|wontfix\|duplicate] [--remarks TEXT]` | the `1`–`7` keys; Done needs both a terminal status and `--remarks`, its closing remarks |
 | `reply ID` | queue the text on stdin as the user's reply |
 | `report-url VALUE` | the site URL a `report://<project>/<slug>` value points at |
 
@@ -335,7 +340,7 @@ and it reloads live through `omp-board api wait`.
 | `e` | open the issue file in Tern |
 | `/` | filter by substring over title, category and body; `enter` keeps it, `esc` clears it |
 | `a` | toggle Done between the last 7 days and every archived issue |
-| `1`–`7` | set the state; `7` asks for `f` fixed, `w` wontfix or `d` duplicate |
+| `1`–`7` | set the state; `7` asks for `f` fixed, `w` wontfix or `d` duplicate, then the closing remarks |
 | `esc` | clear the filter, cancel a prompt, or leave the detail view |
 
 The detail view is the issue's fields and its whole body as one markdown node,

@@ -42,9 +42,10 @@ export async function moveIssueTo(
 	record: IssueRecord,
 	state: BoardStateId,
 	doneStatus?: DoneStatus,
+	remarks?: string,
 ): Promise<MoveResult> {
 	const id = record.id;
-	const moved = await moveIssue(root, id, moveFor(state, record, doneStatus));
+	const moved = await moveIssue(root, id, moveFor(state, record, doneStatus, remarks));
 	if (state === "done") await releaseClaim(root, id);
 	await setQueued(root, id, state === "up-next");
 	const holder = state === "done" ? undefined : await liveHolder(root, id);

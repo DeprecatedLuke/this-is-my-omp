@@ -54,14 +54,15 @@ of corrupting the metadata layer.
 ### Closing remarks
 
 An archived issue may carry `archive_reason`, the closing remarks the board shows
-at the top of the finished issue. An agent write that closes an active issue —
-the `archive` op, or an `issues://<id>.md` rewrite that sets `status` to
-`fixed`/`wontfix`/`duplicate` — must supply them: the op's `reason` is required,
-and the rewrite is rejected without a non-empty `archive_reason`. A rewrite of an
-already-archived issue that drops the line keeps the existing text, a blank value
-is rejected on any write, and every path back to active — `unarchive`, a
-non-terminal `status`, a board move — drops the key. The board's own Done asks for
-nothing: that move is the user's.
+at the top of the finished issue. Every path that closes an active issue must
+supply them — the `archive` op, whose `reason` is required; an
+`issues://<id>.md` rewrite that sets `status` to `fixed`/`wontfix`/`duplicate`,
+rejected without a non-empty `archive_reason`; and the board's own Done, which
+asks for them after the status prompt. The store enforces this on every move and
+archive, so there is one rule. A rewrite of an already-archived issue that drops
+the line keeps the existing text, a blank value is rejected on any write, and
+every path back to active — `unarchive`, a non-terminal `status`, a board move —
+drops the key.
 
 ### `stage`
 

@@ -11,7 +11,7 @@
  *   wait --since FP [--timeout-ms N]          block until the board changes
  *   detail ID                                 one issue, its replies and body
  *   seen ID                                   mark a Finished issue as looked at
- *   move ID STATE [--status fixed|…]          the `1`-`7` keys
+ *   move ID STATE --status S --remarks TEXT   the `1`-`7` keys; Done needs both
  *   reply ID                                  queue a reply typed on stdin
  *   report-url VALUE                          the site URL of a report:// value
  */
@@ -125,6 +125,8 @@ export interface ApiOptions {
 	since?: string;
 	timeoutMs: number;
 	status?: string;
+	/** Closing remarks; with `--status` on a move to Done. */
+	remarks?: string;
 }
 
 /** Thrown for a malformed command line; reported as the `error` object. */
@@ -196,6 +198,12 @@ export function parseApiArgs(argv: readonly string[]): ApiOptions {
 		if (arg === "--status" || arg.startsWith("--status=")) {
 			const flag = flagValue(argv, index, "--status");
 			options.status = flag.value;
+			index = flag.next;
+			continue;
+		}
+		if (arg === "--remarks" || arg.startsWith("--remarks=")) {
+			const flag = flagValue(argv, index, "--remarks");
+			options.remarks = flag.value;
 			index = flag.next;
 			continue;
 		}
@@ -400,6 +408,13 @@ async function moveVerb(root: string, options: ApiOptions): Promise<{ message: s
 	if (doneStatus !== undefined && known.id !== "done") {
 		throw new ApiUsageError("--status only applies to Done");
 	}
+	const remarks = options.remarks?.trim();
+	if (known.id === "done" && (remarks === undefined || remarks === "")) {
+		throw new ApiUsageError(`moving #${id} to Done needs --remarks with the closing remarks`);
+	}
+	if (options.remarks !== undefined && known.id !== "done") {
+		throw new ApiUsageError("--remarks only applies to Done");
+	}
 	const record = await findIssueById(root, id);
 	if (record === undefined) throw new Error(`Issue #${id} not found.`);
 	// Already there: the TUI's key is a no-op, so the store is left alone and the
@@ -408,7 +423,7 @@ async function moveVerb(root: string, options: ApiOptions): Promise<{ message: s
 		const holder = known.id === "done" ? undefined : await liveHolder(root, id);
 		return { message: moveMessage(id, known.id, holder) };
 	}
-	const { message } = await moveIssueTo(root, record, known.id, doneStatus as DoneStatus | undefined);
+	const { message } = await moveIssueTo(root, record, known.id, doneStatus as DoneStatus | undefined, remarks);
 	return { message };
 }
 
