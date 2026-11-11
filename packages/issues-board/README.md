@@ -135,10 +135,12 @@ the target is **Up next**; see [Replies](#replies).
 | `q` / `ctrl+c` | quit |
 
 In the detail view `↑` `↓` / `j` `k` / page keys scroll, `g` / `G` jump to the
-top and bottom, `esc` goes back and `e` edits the file. A `needs-you` issue that
-says what it needs from the user leads the view with a `Needs you` line in the
-state's colour and that text, above the fields and the body, and scrolls with the
-rest of it; an issue without a `needs` value shows nothing there.
+top and bottom, `esc` goes back and `e` edits the file. Every active `needs-you`
+issue leads the view with a `Needs you` line in the state's colour, above the
+fields and the body, and it scrolls with the rest. Below it is the issue's
+`needs` text in the same colour, or a dim "No ask recorded" line when the issue
+has none (moved there from the board, or by a session started before `needs`
+existed).
 
 The board reloads itself whenever `.omp/issues` or the issues inbox changes
 (debounced 150 ms), so an agent filing, editing or taking an issue shows up
@@ -330,10 +332,10 @@ and it reloads live through `omp-board api wait`.
 | `esc` | clear the filter, cancel a prompt, or leave the detail view |
 
 The detail view is the issue's fields and its whole body as one markdown node,
-scrolled by Tern's own wheel and scrollbar. A `needs-you` issue that carries a
-`needs` value opens with that block above its card: a `Needs you` line and the
-text below it, both in the state's colour, so what the user has to decide comes
-first. No key scrolls the view, so its hints name
+scrolled by Tern's own wheel and scrollbar. Every active `needs-you` issue opens
+with a block above its card: a `Needs you` line and its `needs` text below it,
+both in the state's colour (a muted "No ask recorded" line when it has none), so
+what the user has to decide comes first. No key scrolls the view, so its hints name
 none: a block cannot drive Tern's surface scroll — `cx:frame` has no scroll op,
 `BlockCx` has no command call, and the window's `scroll_line_up` …
 `scroll_bottom` actions run without error and move nothing on a block (they scroll

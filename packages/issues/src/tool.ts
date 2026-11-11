@@ -26,6 +26,7 @@ import {
 	ISSUE_STAGES,
 	listIssues,
 	moveIssue,
+	NEEDS_REQUIRED,
 	normalizeCategory,
 	renderIssueListing,
 	unarchiveIssue,
@@ -212,11 +213,7 @@ function errorResult(op: IssuesToolParams["op"], error: unknown): AgentToolResul
  */
 function assertNeedsPairing(stage: IssueStage | "none" | undefined, needs: string | undefined, subject: string): void {
 	if (stage === "needs-you") {
-		if (needs === undefined) {
-			throw new Error(
-				`${subject}\`stage: needs-you\` needs a \`needs\` text: what you need from the user — the decision, approval or action they must take.`,
-			);
-		}
+		if (needs === undefined) throw new Error(`${subject}${NEEDS_REQUIRED}`);
 		return;
 	}
 	if (needs !== undefined) throw new Error(`${subject}\`needs\` goes only with stage \`needs-you\`.`);

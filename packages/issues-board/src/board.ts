@@ -872,13 +872,22 @@ export class BoardComponent implements Component {
 		return lines.slice(0, height);
 	}
 
-	/** What the agent needs from the user: the first thing in the detail view, above everything else. */
+	/**
+	 * What the agent needs from the user: the first thing in the detail view, above
+	 * everything else. Every active `needs-you` issue gets the block; one without a
+	 * `needs` text (set from the board, or by a session older than the field) says
+	 * so, so the user is not left looking for an ask that is not there.
+	 */
 	#detailNeeds(record: IssueRecord, width: number): string[] {
-		const needs = record.frontmatter.needs?.trim();
-		if (needs === undefined || needs === "") return [];
+		if (record.archived || record.frontmatter.stage !== "needs-you") return [];
 		const tone = stateIdTone("needs-you");
-		const wrapWidth = Math.max(20, width - 2);
 		const lines = [` ${theme.bold(theme.fg(tone, "Needs you"))}`];
+		const needs = record.frontmatter.needs?.trim();
+		if (needs === undefined || needs === "") {
+			lines.push(` ${theme.fg("dim", "No ask recorded; read the issue below.")}`);
+			return lines;
+		}
+		const wrapWidth = Math.max(20, width - 2);
 		// Line breaks the agent wrote are kept: each line wraps on its own, a blank
 		// one stays blank.
 		for (const raw of sanitize(needs).split("\n")) {

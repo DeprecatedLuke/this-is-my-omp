@@ -80,6 +80,10 @@ It is set together with the stage: `{"op":"stage","id":12,"stage":"needs-you",
 "needs":"Pick the storage layout: one table per tenant, or a shared table with a
 tenant column?"}`. The `stage` op requires it for `needs-you` and rejects it with
 any other stage; `add` takes both to file an issue that already asks something.
+An `issues://<id>.md` rewrite that newly sets `needs-you` is rejected without
+it; a rewrite of an issue already in `needs-you` that drops the `needs` line
+keeps the existing text. Only the board's own state key moves an issue there
+without text.
 
 The key carries an invariant: it exists only while an active issue sits in
 `needs-you`. Every other write drops it — a stage change, an archive, an

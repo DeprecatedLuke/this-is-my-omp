@@ -788,6 +788,55 @@ describe("issues store: `needs` rides only with an active needs-you issue", () =
 		expect(await needsOnDisk(record.id)).toBeUndefined();
 	});
 
+	const entries: Array<{ name: string; extra?: Record<string, unknown> }> = [
+		{ name: "a plain open issue" },
+		{ name: "another stage", extra: { stage: "running" } },
+	];
+	for (const row of entries) {
+		it(`an issues:// rewrite of ${row.name} into needs-you must carry a \`needs\` text`, async () => {
+			const { record } = await addIssue(tempDir, { category: "infra", title: "Flaky deploy", body: "B.", extra: row.extra });
+			const before = await Bun.file(record.filePath).text();
+
+			await expect(
+				editVia(tempDir, record.id, frontmatter => {
+					frontmatter.stage = "needs-you";
+				}),
+			).rejects.toThrow("issues:// write rejected: `stage: needs-you` needs a `needs` text");
+			expect(await Bun.file(record.filePath).text()).toBe(before);
+
+			await editVia(tempDir, record.id, frontmatter => {
+				frontmatter.stage = "needs-you";
+				frontmatter.needs = NEEDS;
+			});
+			expect((await findIssueById(tempDir, record.id))!.frontmatter.stage).toBe("needs-you");
+			expect(await needsOnDisk(record.id)).toBe(NEEDS);
+		});
+	}
+
+	it("an issues:// rewrite that drops the `needs` line of a needs-you issue keeps the text", async () => {
+		const id = await waitingIssue();
+
+		await editVia(tempDir, id, frontmatter => {
+			delete frontmatter.needs;
+		});
+
+		expect(await needsOnDisk(id)).toBe(NEEDS);
+	});
+
+	it("a board-marked text-less needs-you issue still accepts an unrelated issues:// rewrite", async () => {
+		const { record } = await addIssue(tempDir, { category: "infra", title: "Flaky deploy", body: "B." });
+		await moveIssue(tempDir, record.id, { stage: "needs-you" });
+
+		await editVia(tempDir, record.id, frontmatter => {
+			frontmatter.severity = "high";
+		});
+
+		const after = (await findIssueById(tempDir, record.id))!;
+		expect(after.frontmatter.stage).toBe("needs-you");
+		expect(after.frontmatter.severity).toBe("high");
+		expect(await needsOnDisk(record.id)).toBeUndefined();
+	});
+
 	it("rejects a misplaced or blank `needs` on every write path without touching disk", async () => {
 		const id = await waitingIssue();
 		const filePath = (await findIssueById(tempDir, id))!.filePath;

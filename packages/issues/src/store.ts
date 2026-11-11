@@ -643,6 +643,10 @@ function assertValidStage(stage: unknown, label: string): void {
 	throw new Error(`${label}invalid stage '${String(stage)}'. Use one of: ${ISSUE_STAGES.join(", ")}.`);
 }
 
+/** Why an agent write into `needs-you` without a `needs` text is refused. */
+export const NEEDS_REQUIRED =
+	"`stage: needs-you` needs a `needs` text: what you need from the user — the decision, approval or action they must take.";
+
 /**
  * Reject a `needs` that is not a non-empty string. It is prose, so there is no
  * enum to check — only that the agent actually said what it needs.
@@ -827,6 +831,15 @@ export async function saveIssueContent(cwd: string, id: number, content: string)
 	// to active so the metadata layer stays consistent with `unarchiveIssue`.
 	if (!nextArchived) {
 		delete frontmatter.archive_reason;
+	}
+	// `needs-you` carries its ask on this path too, as on the `stage` op: a
+	// rewrite that keeps the stage keeps the text when the edit dropped the line,
+	// and one that newly lands an issue there must say what it needs.
+	if (!nextArchived && frontmatter.stage === "needs-you" && frontmatter.needs === undefined) {
+		if (current.archived || current.frontmatter.stage !== "needs-you") {
+			throw new Error(`issues:// write rejected: ${NEEDS_REQUIRED}`);
+		}
+		frontmatter.needs = current.frontmatter.needs;
 	}
 
 	const nextSlug = slugifyTitle(nextTitle);
