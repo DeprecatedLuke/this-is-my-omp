@@ -16,6 +16,7 @@ import type { BeforeAgentStartEventResult, ExtensionAPI, ExtensionContext } from
 import { InternalUrlRouter } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import { subprocessToolRegistry } from "@oh-my-pi/pi-coding-agent/task/subprocess-tool-registry";
 import { boardSection, filedIssuesSection } from "./catalogue";
+import { takeReplies } from "./delivery";
 import {
 	claimIsStale,
 	claimOwner,
@@ -24,7 +25,6 @@ import {
 	refreshPresence,
 	releaseSessionClaims,
 	removePresence,
-	takeReply,
 	touchPresence,
 } from "./inbox";
 import { IssuesProtocolHandler } from "./protocol";
@@ -32,7 +32,6 @@ import { QueueStallGuard, queueSignature, renderQueue } from "./queue";
 import { ReminderBudget, renderReminder } from "./reminder";
 import { renderFiledIssueInline, renderFiledIssuesFinal, renderNeedsMessage, renderRepliesMessage } from "./render";
 import {
-	type DeliveredReply,
 	type IssueReplies,
 	NEEDS_MESSAGE_TYPE,
 	needsDetails,
@@ -44,7 +43,6 @@ import {
 } from "./replies";
 import { readIssuesSettings } from "./settings";
 import {
-	appendReplyHistory,
 	findIssueById,
 	type IssueRecord,
 	type IssueSummary,
@@ -82,47 +80,6 @@ function groupByIssue(replies: readonly PendingReply[]): Map<number, PendingRepl
 		else groups.set(reply.id, [reply]);
 	}
 	return groups;
-}
-
-/**
- * Take every reply of one issue out of the inbox. A reply another session took
- * first simply yields nothing; one failure never costs the others.
- */
-async function takeReplies(
-	pi: ExtensionAPI,
-	root: string,
-	replies: readonly PendingReply[],
-	sessionId: string,
-): Promise<DeliveredReply[]> {
-	const taken: DeliveredReply[] = [];
-	for (const reply of replies) {
-		try {
-			const text = await takeReply(root, reply, sessionId);
-			if (text !== undefined) taken.push({ text, at: reply.at });
-		} catch (error) {
-			pi.logger.debug("issues: failed to take a pending reply", {
-				id: reply.id,
-				error: error instanceof Error ? error.message : String(error),
-			});
-		}
-	}
-	return taken;
-}
-
-/** Move delivered replies into their issues' `## Replies` history. */
-async function recordDelivered(pi: ExtensionAPI, root: string, delivered: readonly IssueReplies[]): Promise<void> {
-	for (const item of delivered) {
-		for (const reply of item.replies) {
-			try {
-				await appendReplyHistory(root, item.record.id, reply.text, reply.at);
-			} catch (error) {
-				pi.logger.debug("issues: failed to record a delivered reply", {
-					id: item.record.id,
-					error: error instanceof Error ? error.message : String(error),
-				});
-			}
-		}
-	}
 }
 
 /**
@@ -252,20 +209,19 @@ async function deliverReplies(
 		// The issue vanished under the reply: leave the text pending rather than drop it.
 		if (!record) continue;
 		await markRunning(pi, root, id);
-		const taken = await takeReplies(pi, root, replies, sessionId);
+		const taken = await takeReplies(root, replies, sessionId, (message, context) =>
+			pi.logger.debug(message, context),
+		);
 		if (taken.length > 0) delivered.push({ record, replies: taken });
 	}
 	if (delivered.length === 0) return undefined;
 
-	const result: RepliesReminder = {
+	return {
 		systemPrompt,
 		customType: REPLIES_MESSAGE_TYPE,
 		content: renderReplies(delivered),
 		details: repliesDetails(delivered),
 	};
-	// The reminder is part of this prompt now; move each reply into its issue body.
-	await recordDelivered(pi, root, delivered);
-	return result;
 }
 
 /**
@@ -309,11 +265,15 @@ async function takeQueueReminder(
 	for (const record of queue) {
 		// A requeued issue is handed back as work in flight: the board shows Running.
 		await markRunning(pi, root, record.id);
-		delivered.push({ record, replies: await takeReplies(pi, root, byIssue.get(record.id) ?? [], sessionId) });
+		delivered.push({
+			record,
+			replies: await takeReplies(root, byIssue.get(record.id) ?? [], sessionId, (message, context) =>
+				pi.logger.debug(message, context),
+			),
+		});
 	}
 	if (delivered.length === 0) return undefined;
 
-	await recordDelivered(pi, root, delivered);
 	return renderQueue(delivered);
 }
 

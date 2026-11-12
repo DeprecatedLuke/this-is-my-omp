@@ -264,7 +264,7 @@ export function renderIssuesResult(
  * `registerMessageRenderer` callback for {@link REPLIES_MESSAGE_TYPE}: the
  * reminder that delivered queued board replies on this prompt.
  *
- * Collapsed, one compact row per reply keeps the prompt header small; expanded
+ * Collapsed, one compact row per issue keeps the prompt header small; expanded
  * returns `undefined` so the frame falls back to the reminder text itself, which
  * is where the verbatim reply bodies are.
  */
@@ -285,12 +285,12 @@ export function renderRepliesMessage(
 		header: {
 			tool: "Issue replies",
 			icon: "success",
-			title: count === 0 ? `${waiting.length} waiting on you` : `${count} ${count === 1 ? "reply" : "replies"}`,
+			title: count === 0 ? `${waiting.length} waiting on you` : `${count} ${count === 1 ? "issue" : "issues"}`,
 		},
 		body: [
 			...collapsedList(details.replies, reply => `${theme.fg("accent", reply.url)} ${inline(reply.title)}`, {
 				expanded: false,
-				noun: "reply",
+				noun: "issue",
 				theme,
 			}),
 			...collapsedList(

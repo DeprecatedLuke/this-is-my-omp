@@ -152,13 +152,14 @@ this session holds, so no session is told to finish another session's work.
 
 No session takes an issue on its own. An issue becomes a session's work when the
 user asks that session to work on it: the agent sets `stage: running` with the
-`stage` op, which claims the issue (`claims/<id>`, holding the session id).
-Setting `needs-you` claims it as well, so the answer comes back to the session
-that asked. From then on the issue follows that session — the user's board
-replies and requeues for it are delivered to that session and to no other, at
-its next prompt or at turn end while it is working. A queued, `up-next` or
-replied-to issue that no session holds is delivered to nobody: the board shows
-the reply waiting, and nothing is claimed on a session's behalf.
+`stage` op, which claims the issue (`claims/<id>`, holding the session id) and
+returns its pending replies in that same tool result, before the agent starts
+work. Setting `needs-you` claims it as well, so the answer comes back to the
+session that asked. From then on the issue follows that session — later board
+replies and requeues are delivered to that session and to no other, at its next
+prompt or at turn end while it is working. A queued, `up-next` or replied-to issue
+that no session holds is delivered to nobody: the board shows the reply waiting,
+and nothing is claimed on a session's behalf.
 
 - **The heartbeat** is `sessions/<sessionId>`, an empty file whose mtime is
   refreshed every 30 s while the session lives. A session is live while its
@@ -200,16 +201,26 @@ and a cloned repo's text cannot drive an agent. The git side only records that t
 user wants the issue worked: the issue moves to Up next — or keeps its stage when
 it is already `running`, and an archived issue reopens as `open` + `up-next`.
 
-Nothing wakes an idle session, so delivery happens at the next prompt of the
-session holding the issue, or at its turn end while it is working. A reply to an
-issue no session holds stays pending — the board says so — until the user prompts
-a session to take that issue. The claim is what routes it (`claim` is an exclusive
-`link`, so exactly one session holds an issue), and each reply is taken with an
-atomic `rename` — a reply another session took already yields nothing. The plugin
-adds an `<system-reminder>` custom message (`src/prompts/replies.md`, custom type
-`omp-issues/replies`) listing the taken texts with their `issues://<id>` and title,
-then appends each one to the issue body under `## Replies` as
-`### User reply · <time>`. That history is the only trace a reply leaves in git.
+Nothing wakes an idle session. A reply to an issue no session holds stays pending
+until the user prompts a session to take that issue. A successful main-session
+claim through `stage` or `add` returns pending reply texts verbatim, oldest first,
+in the same tool result. Read those replies before planning or delegating work.
+A `needs-you` claim keeps the requested stage; delivering its replies does not
+silently change it to `running`. Conflicting or failed claims and subagent calls
+leave replies pending.
+
+The claim routes delivery (`claim` is an exclusive `link`, so exactly one session
+holds an issue), and each reply is taken with an atomic `rename`. Claim results,
+prompt reminders and turn-end reminders share the same take-and-history path:
+each taken text is appended under `## Replies` as `### User reply · <time>` and
+is no longer pending, so the next prompt or turn end does not deliver it again.
+That history is the only trace a reply leaves in git.
+
+Replies arriving after the claim's inbox snapshot remain deliverable at the
+holder's next prompt or turn end. Prompt delivery adds a `<system-reminder>`
+custom message (`src/prompts/replies.md`, custom type `omp-issues/replies`) listing
+the taken texts with their `issues://<id>` and title. Its collapsed card counts
+issues, not individual reply texts.
 
 ### When the user answers in chat instead
 

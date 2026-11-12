@@ -28,7 +28,7 @@ interface PromptMessage {
 	details: unknown;
 }
 
-/** One main session: the real plugin loaded into a host that only routes its events and its tool. */
+/** One session: the real plugin loaded into a host that only routes its events and its tool. */
 interface Session {
 	/** Run every handler the plugin registered for `event`, in order; the last result wins. */
 	fire(event: string, payload?: unknown): Promise<unknown>;
@@ -65,8 +65,8 @@ afterEach(async () => {
 	await fs.rm(tempDir, { recursive: true, force: true });
 });
 
-/** Load the plugin as main session `sessionId` in the temp checkout. */
-function openSession(sessionId: string): Session {
+/** Load the plugin as `sessionId` in the temp checkout. */
+function openSession(sessionId: string, kind: "main" | "subagent" = "main"): Session {
 	let id = sessionId;
 	const handlers = new Map<string, Handler[]>();
 	let tool: typeof issuesTool | undefined;
@@ -84,7 +84,7 @@ function openSession(sessionId: string): Session {
 	issuesPlugin(pi as unknown as ExtensionAPI);
 	const ctx = {
 		cwd: tempDir,
-		agent: { kind: "main" },
+		agent: { kind },
 		sessionManager: { getSessionId: () => id },
 		getAsyncJobSnapshot: () => null,
 	} as unknown as ExtensionContext;
@@ -163,6 +163,10 @@ async function requeue(id: number): Promise<void> {
 
 async function pendingTexts(): Promise<string[]> {
 	return (await listReplies(tempDir)).map(reply => reply.text);
+}
+
+function textOf(result: AgentToolResult<IssuesToolDetails>): string {
+	return result.content.map(part => (part.type === "text" ? part.text : "")).join("\n");
 }
 
 describe("issues plugin: hand-off marks the issue running", () => {
@@ -264,6 +268,85 @@ describe("issues plugin: an issue follows the session that set it running", () =
 		expect((await findIssueById(tempDir, replied))?.frontmatter.stage).toBe("up-next");
 	});
 
+	it("claiming returns every pending scope change before work starts, without replaying it at the next prompt or turn end", async () => {
+		const { a, b } = await twoSessions();
+		const id = await plainIssue("Retry a failed export");
+		const scope = "Do not retry automatically.\n\nExpose a manual `retry` action instead.\nKeep the existing error response.";
+		const constraint = "Only retry the selected export; leave all other exports unchanged.";
+		await replyToIssue(tempDir, id, scope);
+		await replyToIssue(tempDir, id, constraint);
+		const unrelated = await plainIssue("Migrate the cache");
+		const otherReply = "Leave the cache migration parked.";
+		await replyToIssue(tempDir, unrelated, otherReply);
+		expect(await claimOwner(tempDir, id)).toBeUndefined();
+
+		const taken = await a.tool({ op: "stage", id, stage: "running" });
+		expect(taken.isError).toBeUndefined();
+		for (const reply of [scope, constraint]) expect(textOf(taken)).toContain(reply);
+		expect(textOf(taken)).not.toContain(otherReply);
+		expect(await claimOwner(tempDir, id)).toBe("session-a");
+		expect(await pendingTexts()).toEqual([otherReply]);
+		const afterClaim = (await findIssueById(tempDir, id))!;
+		expect(afterClaim.frontmatter.stage).toBe("running");
+		for (const reply of [scope, constraint]) expect(afterClaim.body.split(reply)).toHaveLength(2);
+		expect(await claimOwner(tempDir, unrelated)).toBeUndefined();
+		expect((await findIssueById(tempDir, unrelated))?.body).toBe("B.");
+
+		for (const session of [a, b]) {
+			const prompt = (await session.prompt()) ?? "";
+			const turnEnd = (await session.turnEnd()) ?? "";
+			for (const reply of [scope, constraint, otherReply]) {
+				expect(prompt).not.toContain(reply);
+				expect(turnEnd).not.toContain(reply);
+			}
+		}
+		expect((await findIssueById(tempDir, id))?.body).toBe(afterClaim.body);
+		expect(await pendingTexts()).toEqual([otherReply]);
+
+		// A new reply with identical text is a new message, not a duplicate to suppress.
+		await replyToIssue(tempDir, id, scope);
+		expect(await b.prompt()).toBeUndefined();
+		expect(await a.prompt()).toContain(scope);
+		expect((await findIssueById(tempDir, id))!.body.split(scope)).toHaveLength(3);
+
+		const later = "Make the retry action available from the export details.";
+		await replyToIssue(tempDir, id, later);
+		expect(await b.turnEnd()).toBeUndefined();
+		const turnEnd = (await a.turnEnd()) ?? "";
+		expect(turnEnd).toContain(later);
+		expect(turnEnd).not.toContain(scope);
+		expect(turnEnd).not.toContain(constraint);
+		const afterLaterReplies = (await findIssueById(tempDir, id))!.body;
+		expect(afterLaterReplies.split(later)).toHaveLength(2);
+		expect(afterLaterReplies.split(constraint)).toHaveLength(2);
+		expect(await pendingTexts()).toEqual([otherReply]);
+		expect(await a.prompt()).toBeUndefined();
+		const nextTurn = (await a.turnEnd()) ?? "";
+		for (const reply of [scope, constraint, later]) expect(nextTurn).not.toContain(reply);
+		expect((await findIssueById(tempDir, id))?.body).toBe(afterLaterReplies);
+	});
+
+	it("a subagent with a session id cannot claim or consume a pending reply through the registered tool", async () => {
+		const { a } = await twoSessions();
+		const child = openSession("task-session", "subagent");
+		const id = await plainIssue("Retry a failed export");
+		const reply = "Expose a manual retry action, not an automatic retry.";
+		await replyToIssue(tempDir, id, reply);
+
+		const staged = await child.tool({ op: "stage", id, stage: "running" });
+		expect(staged.isError).toBeUndefined();
+		expect((await findIssueById(tempDir, id))?.frontmatter.stage).toBe("running");
+		expect(textOf(staged)).not.toContain(reply);
+		expect(await claimOwner(tempDir, id)).toBeUndefined();
+		expect(await pendingTexts()).toEqual([reply]);
+		expect((await findIssueById(tempDir, id))?.body).toBe("B.");
+
+		const claimed = await a.tool({ op: "stage", id, stage: "running" });
+		expect(textOf(claimed)).toContain(reply);
+		expect(await claimOwner(tempDir, id)).toBe("session-a");
+		expect(await pendingTexts()).toEqual([]);
+	});
+
 	it("replies and a requeue reach the holder at its prompt and turn end, and never the other live session", async () => {
 		const { a, b } = await twoSessions();
 		const id = await plainIssue("Pin the toolchain");
@@ -311,9 +394,12 @@ describe("issues plugin: an issue follows the session that set it running", () =
 			expect(await claimOwner(tempDir, id)).not.toBe("session-b");
 
 			const taken = await b.tool({ op: "stage", id, stage: "running" });
-			expect(taken.content).toEqual([{ type: "text", text: `#${id} stage → running` }]);
+			expect(taken.isError).toBeUndefined();
+			expect(textOf(taken)).toContain("Use the version from the lockfile.");
 			expect(await claimOwner(tempDir, id)).toBe("session-b");
-			expect(await b.prompt()).toContain("Use the version from the lockfile.");
+			expect(await pendingTexts()).toEqual([]);
+			expect(await b.prompt()).toBeUndefined();
+			expect((await b.turnEnd()) ?? "").not.toContain("Use the version from the lockfile.");
 
 			// The old holder coming back does not pull the issue away again.
 			expect(await a.prompt()).toBeUndefined();

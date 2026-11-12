@@ -2,11 +2,11 @@
  * Delivery of `omp-board` user replies.
  *
  * A reply is typed on the board and parked in the local inbox — never in the
- * git-tracked issue — and nothing wakes an idle session. The next prompt of a
- * main session in this checkout turns the pending replies into a
- * `<system-reminder>` custom message, and each one is recorded in the issue body
- * once it has been handed to the model. Only the rendering lives here so the
- * event wiring in `index.ts` stays a thin adapter.
+ * git-tracked issue — and nothing wakes an idle session. Delivery happens when
+ * a main session claims the issue: the claim result carries its pending replies,
+ * and a prompt or turn end delivers whatever remains. Each delivered reply is
+ * recorded in the issue body once taken. Only the rendering lives here so the
+ * tool and event wiring stay thin adapters.
  */
 import { prompt } from "@oh-my-pi/pi-utils";
 import needsTemplate from "./prompts/needs.md" with { type: "text" };
@@ -71,6 +71,15 @@ export function renderReplies(items: readonly IssueReplies[]): string {
 			)
 			.join("\n\n"),
 	});
+}
+
+/**
+ * Model-visible section for replies taken by the claim that just succeeded. It
+ * states no stage the claim did not set: a `needs-you` hand-off is not running.
+ */
+export function renderClaimReplies(id: number, replies: readonly DeliveredReply[]): string {
+	const texts = replies.map(reply => reply.text).join("\n\n");
+	return `Pending user replies for issues://${id} (${replies.length}, oldest first):\n\n${texts}`;
 }
 
 /** Message details for the TUI card. */

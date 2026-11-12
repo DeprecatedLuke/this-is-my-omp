@@ -7,8 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, setSystemTime } from "bun:
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { claim, claimOwner, PRESENCE_STALE_MS, touchPresence } from "../src/inbox";
-import { findIssueById, getIssuesRoot, listIssues, NEEDS_STAGE_ONLY } from "../src/store";
+import { claim, claimOwner, inboxDir, listReplies, PRESENCE_STALE_MS, touchPresence } from "../src/inbox";
+import { findIssueById, getIssuesRoot, listIssues, NEEDS_STAGE_ONLY, replyToIssue } from "../src/store";
 import { type IssuesToolDetails, runIssuesOp } from "../src/tool";
 import { useTempAgentDir } from "./agent-dir";
 
@@ -390,7 +390,7 @@ describe("issues tool", () => {
 		},
 	];
 	for (const row of stageRejections) {
-		it(`stage rejects ${row.name} and leaves the file byte-identical`, async () => {
+		it(`stage rejects ${row.name} and leaves the file, claim, and pending replies untouched`, async () => {
 			const created = await runIssuesOp(tempDir, {
 				op: "add",
 				category: "infra",
@@ -398,15 +398,19 @@ describe("issues tool", () => {
 				body: "B.",
 			});
 			const id = (created.details as IssuesToolDetails).id!;
-			await runIssuesOp(tempDir, { op: "stage", id, stage: "up-next" });
+			const reply = "Keep the existing deployment until the replacement is approved.";
+			await replyToIssue(tempDir, id, reply);
 			const filePath = (await findIssueById(tempDir, id))!.filePath;
 			const before = await Bun.file(filePath).text();
 
-			const result = await runIssuesOp(tempDir, { op: "stage", id, ...row.params });
+			const result = await runIssuesOp(tempDir, { op: "stage", id, ...row.params }, { sessionId: "session-main" });
 
 			expect(result.isError).toBe(true);
 			expect((result.details as IssuesToolDetails).error).toMatch(row.error);
 			expect(await Bun.file(filePath).text()).toBe(before);
+			expect(await claimOwner(tempDir, id)).toBeUndefined();
+			expect((await listReplies(tempDir)).map(pending => pending.text)).toEqual([reply]);
+			expect(textOf(result)).not.toContain(reply);
 		});
 	}
 
@@ -471,23 +475,65 @@ describe("issues tool: running and needs-you claim the issue for the calling ses
 		return (created.details as IssuesToolDetails).id!;
 	}
 
-	it("a main session claims a free issue; a call without a session id (a subagent) claims nothing", async () => {
+	it("a stage call without a session id leaves replies pending for the main session that claims the issue", async () => {
 		const id = await addRunnable();
+		const reply = "Do not switch runners; retry the existing deployment.";
+		await replyToIssue(tempDir, id, reply);
 
-		await runIssuesOp(tempDir, { op: "stage", id, stage: "running" });
+		const unclaimed = await runIssuesOp(tempDir, { op: "stage", id, stage: "running" });
+		expect(unclaimed.isError).toBeUndefined();
+		expect(textOf(unclaimed)).not.toContain(reply);
 		expect(await claimOwner(tempDir, id)).toBeUndefined();
+		expect((await listReplies(tempDir)).map(pending => pending.text)).toEqual([reply]);
+		expect((await findIssueById(tempDir, id))?.body).toBe("B.");
 
 		const started = await runIssuesOp(tempDir, { op: "stage", id, stage: "running" }, { sessionId: SELF });
-		expect(textOf(started)).toBe(`#${id} stage → running`);
+		expect(textOf(started)).toContain(reply);
 		expect(await claimOwner(tempDir, id)).toBe(SELF);
+		expect(await listReplies(tempDir)).toEqual([]);
 	});
 
-	it("stage needs-you claims a free issue for a main session: the answer belongs to the session that asked", async () => {
+	it("stage needs-you returns pending answers without changing the requested stage, and re-claiming cannot replay them", async () => {
 		const id = await addRunnable();
+		const reply = "Use the existing runner.\n\nDo not create a second deployment.";
+		await replyToIssue(tempDir, id, reply);
+		const params = { op: "stage", id, stage: "needs-you", needs: "Approve the retry?" } as const;
 
-		await runIssuesOp(tempDir, { op: "stage", id, stage: "needs-you", needs: "Approve it?" }, { sessionId: SELF });
-
+		const staged = await runIssuesOp(tempDir, params, { sessionId: SELF });
+		expect(staged.isError).toBeUndefined();
+		expect(textOf(staged)).toContain(reply);
 		expect(await claimOwner(tempDir, id)).toBe(SELF);
+		const after = (await findIssueById(tempDir, id))!;
+		expect(after.frontmatter.stage).toBe("needs-you");
+		expect(after.frontmatter.needs).toBe("Approve the retry?");
+		expect(after.body.split(reply)).toHaveLength(2);
+		expect(await listReplies(tempDir)).toEqual([]);
+
+		const repeated = await runIssuesOp(tempDir, params, { sessionId: SELF });
+		expect(textOf(repeated)).not.toContain(reply);
+		expect((await findIssueById(tempDir, id))?.body).toBe(after.body);
+	});
+
+	it("a failed claim leaves replies pending even when the stage move succeeds", async () => {
+		const id = await addRunnable();
+		const reply = "Wait for approval before changing the runner.";
+		await replyToIssue(tempDir, id, reply);
+		// A file where the claims directory belongs makes claim storage unavailable.
+		const claimsPath = path.join(inboxDir(tempDir), "claims");
+		await fs.writeFile(claimsPath, "unavailable");
+
+		const staged = await runIssuesOp(tempDir, { op: "stage", id, stage: "running" }, { sessionId: SELF });
+		expect(staged.isError).toBeUndefined();
+		expect((await findIssueById(tempDir, id))?.frontmatter.stage).toBe("running");
+		expect(textOf(staged)).not.toContain(reply);
+		expect((await listReplies(tempDir)).map(pending => pending.text)).toEqual([reply]);
+		expect((await findIssueById(tempDir, id))?.body).toBe("B.");
+
+		await fs.rm(claimsPath);
+		const retried = await runIssuesOp(tempDir, { op: "stage", id, stage: "running" }, { sessionId: SELF });
+		expect(textOf(retried)).toContain(reply);
+		expect(await claimOwner(tempDir, id)).toBe(SELF);
+		expect(await listReplies(tempDir)).toEqual([]);
 	});
 
 	const filings: Array<{ stage: "running" | "needs-you" | "up-next"; needs?: string; claims: boolean }> = [
@@ -522,8 +568,10 @@ describe("issues tool: running and needs-you claim the issue for the calling ses
 		});
 	}
 
-	it("an issue another live session holds is still staged, keeps its holder, and the result warns", async () => {
+	it("a conflicting live holder keeps its replies until it claims through its own session", async () => {
 		const id = await addRunnable();
+		const reply = "Keep the deployment manual; do not enable automatic retries.";
+		await replyToIssue(tempDir, id, reply);
 		await touchPresence(tempDir, PEER);
 		expect(await claim(tempDir, id, PEER)).toBe(true);
 
@@ -533,6 +581,14 @@ describe("issues tool: running and needs-you claim the issue for the calling ses
 		expect((await findIssueById(tempDir, id))?.frontmatter.stage).toBe("running");
 		expect(textOf(started)).toContain(`#${id} is held by another live session (${PEER.slice(0, 6)})`);
 		expect(await claimOwner(tempDir, id)).toBe(PEER);
+		expect(textOf(started)).not.toContain(reply);
+		expect((await listReplies(tempDir)).map(pending => pending.text)).toEqual([reply]);
+		expect((await findIssueById(tempDir, id))?.body).toBe("B.");
+
+		const held = await runIssuesOp(tempDir, { op: "stage", id, stage: "running" }, { sessionId: PEER });
+		expect(textOf(held)).toContain(reply);
+		expect(await claimOwner(tempDir, id)).toBe(PEER);
+		expect(await listReplies(tempDir)).toEqual([]);
 	});
 
 	it("an issue held by a session whose heartbeat went stale is taken over without a warning", async () => {

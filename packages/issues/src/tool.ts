@@ -14,9 +14,11 @@ import * as z from "@oh-my-pi/omptype/zod";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { ExtensionContext, ToolDefinition } from "@oh-my-pi/pi-coding-agent";
 import { prompt, untilAborted } from "@oh-my-pi/pi-utils";
-import { claim, claimIsStale, claimOwner, releaseClaim } from "./inbox";
+import { takeReplies } from "./delivery";
+import { claim, claimIsStale, claimOwner, listReplies, type PendingReply, releaseClaim } from "./inbox";
 import issuesDescription from "./prompts/tool.md" with { type: "text" };
 import { renderIssuesCall, renderIssuesResult } from "./render";
+import { renderClaimReplies } from "./replies";
 import { readIssuesSettings } from "./settings";
 import type { AddIssueInput, IssueRecord, IssueSeverity, IssueStage, IssueStatus, IssueSummary } from "./store";
 import {
@@ -249,7 +251,9 @@ async function executeAdd(
 	const { record } = await addIssue(cwd, input);
 	const outcome = await claimForStage(cwd, record, params.stage, sessionId);
 	const extra = outcome.conflict ?? (outcome.claimed ? "claimed for this session" : undefined);
-	return textResult(summarizeRecord("Created", record, extra), detailsFromRecord("add", record));
+	const pending = await takeClaimReplies(cwd, record.id, sessionId, outcome);
+	const summary = summarizeRecord("Created", record, extra);
+	return textResult(pending ? `${summary}\n\n${pending}` : summary, detailsFromRecord("add", record));
 }
 
 async function executeArchive(
@@ -336,13 +340,46 @@ async function claimForStage(
 				conflict: `#${record.id} is held by another live session (${holder.slice(0, 6)}); two sessions on one issue will conflict, so tell the user.`,
 			};
 		}
-		await claim(cwd, record.id, sessionId);
+		if (!(await claim(cwd, record.id, sessionId))) {
+			// A racing session took the issue between the owner read and the claim:
+			// nothing is ours, so no reply may be consumed for this claim.
+			return {
+				claimed: false,
+				conflict: `#${record.id} could not be claimed for this session; another live session may hold it, so tell the user.`,
+			};
+		}
 		return { claimed: true };
 	} catch {
 		// The stage is what the board shows; a claim that could not be written is
 		// not worth failing the op.
 		return { claimed: false };
 	}
+}
+
+/**
+ * Hand the pending replies of a claimed issue to the claim that just succeeded.
+ * The claim is the ownership proof, so no separate liveness check applies; a
+ * reply arriving after this snapshot stays pending for the next delivery point.
+ * A listing failure consumes nothing, and each take is acknowledged in history
+ * by {@link takeReplies}. Delivered texts are returned verbatim, oldest first.
+ */
+async function takeClaimReplies(
+	cwd: string,
+	id: number,
+	sessionId: string | undefined,
+	outcome: ClaimOutcome,
+): Promise<string | undefined> {
+	if (!outcome.claimed || sessionId === undefined) return undefined;
+	let pending: PendingReply[];
+	try {
+		pending = (await listReplies(cwd)).filter(reply => reply.id === id);
+	} catch {
+		// Nothing was taken, so the next prompt or turn end still delivers the texts.
+		return undefined;
+	}
+	if (pending.length === 0) return undefined;
+	const taken = await takeReplies(cwd, pending, sessionId);
+	return taken.length > 0 ? renderClaimReplies(id, taken) : undefined;
 }
 
 async function executeStage(
@@ -368,6 +405,8 @@ async function executeStage(
 	if (record.frontmatter.needs) text += `\nNeeds: ${record.frontmatter.needs}`;
 	const outcome = await claimForStage(cwd, record, params.stage === "none" ? undefined : params.stage, sessionId);
 	if (outcome.conflict) text += `\n${outcome.conflict}`;
+	const pending = await takeClaimReplies(cwd, record.id, sessionId, outcome);
+	if (pending) text += `\n\n${pending}`;
 	return textResult(text, details);
 }
 
