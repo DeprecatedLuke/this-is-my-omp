@@ -8,13 +8,14 @@ OMP extension package root.
 | Agent      | Purpose                                                                 | Tools                | Model        |
 | ---------- | ----------------------------------------------------------------------- | -------------------- | ------------ |
 | `solver`   | Open-ended problem solving from the web plus reasoning; no repo access.  | `web_search`, `browser` | `pi/solver`  |
-| `research` | Same contract as `solver`, bound to a different model role.              | `web_search`, `browser` | `pi/research` |
+| `advanced` | Generic `task` worker on the `@slow` role with prewalk off, for work smaller models cannot finish. | all (host default) | `@slow` |
 | `tester`   | Authoritative test writer: defends real contracts, refuses plumbing tests. | read/grep/glob/bash/edit/write/lsp/ast_grep/ast_edit | `pi/task` |
 | `designer` | UI/visual design: layout, hierarchy, theming, polish; screenshots and iterates. | all (host default) | `pi/designer` |
 
-`solver`, `research`, and `tester` run with `thinking-level: high`. `solver` and `research` are web-only by
-design: they never receive `read`, `write`, `edit`, `bash`, `grep`, `find`, or `lsp`,
+`solver` and `tester` run with `thinking-level: high`. `solver` is web-only by
+design: it never receives `read`, `write`, `edit`, `bash`, `grep`, `find`, or `lsp`,
 so a delegated question reasoning about the caller's repository is out of contract.
+`advanced` sets `prewalk: false`: it stays on its model for the whole run (a per-agent `/agents` override can still re-arm it).
 
 ## Install
 
@@ -22,7 +23,7 @@ so a delegated question reasoning about the caller's repository is out of contra
 omp plugin link /path/to/this-is-my-omp/packages/agents
 ```
 
-Verify in the `/agents` picker or the `task` tool's agent roster: `solver`, `research`,
+Verify in the `/agents` picker or the `task` tool's agent roster: `advanced`, `solver`,
 `tester`, and `designer` appear as user-scope agents (source `user`, file path under
 `.../packages/agents/agents/`). Unlinking the plugin removes them from the roster
 again — nothing about them remains in the host package. `omp agents unpack` writes
@@ -37,7 +38,7 @@ host's role priority chain):
 ```yaml
 modelRoles:
   solver: anthropic/claude-opus-4-6:high
-  research: openai/gpt-5.4:high
+  slow: anthropic/claude-opus-4-6:high
   task: anthropic/claude-sonnet-4-6
 ```
 
@@ -59,4 +60,4 @@ bun test packages/agents
 
 The suite drives the host's real `discoverAgents()` with this package directory as an
 explicit extension root and asserts the four agents are published from
-`agents/`, keep their model/thinking frontmatter, and keep `research` web-only.
+`agents/`, keep their model/thinking frontmatter, keep `solver` web-only, and keep `advanced` on `@slow` without prewalk.

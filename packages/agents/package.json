@@ -4,10 +4,10 @@
 	"private": true,
 	"license": "MIT",
 	"type": "module",
-	"description": "omp plugin: extra bundled agents (solver, research, tester, designer) shipped as plugin agents/ markdown",
+	"description": "omp plugin: extra bundled agents (advanced, solver, tester, designer) shipped as plugin agents/ markdown",
 	"omp": {
 		"name": "omp-agents",
 		"version": "0.1.0",
-		"description": "Extra delegated agents: solver and research (web-search reasoning only), tester (authoritative test writer), designer (UI/visual polish)"
+		"description": "Extra delegated agents: advanced (task on the slow role, no prewalk), solver (web-search reasoning only), tester (authoritative test writer), designer (UI/visual polish)"
 	}
 }

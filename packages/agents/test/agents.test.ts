@@ -11,7 +11,7 @@ import type { EffectiveExtensionRoots } from "@oh-my-pi/pi-coding-agent/capabili
 import { discoverAgents } from "@oh-my-pi/pi-coding-agent/task/discovery";
 
 const PLUGIN_ROOT = path.resolve(import.meta.dir, "..");
-const SHIPPED = ["research", "solver", "tester", "designer"] as const;
+const SHIPPED = ["advanced", "solver", "tester", "designer"] as const;
 
 let cwd: string;
 let home: string;
@@ -36,7 +36,7 @@ async function names(extensionRoots: EffectiveExtensionRoots): Promise<string[]>
 }
 
 describe("omp-agents plugin", () => {
-	it("publishes solver, research, tester, and designer to discovery", async () => {
+	it("publishes advanced, solver, tester, and designer to discovery", async () => {
 		const found = await names(roots([PLUGIN_ROOT]));
 		for (const name of SHIPPED) expect(found).toContain(name);
 	});
@@ -57,13 +57,13 @@ describe("omp-agents plugin", () => {
 		}
 	});
 
-	it("keeps research restricted to web tools — no repo, file, or command access", async () => {
-		const research = (await discoverAgents(cwd, home, roots([PLUGIN_ROOT]))).agents.find(a => a.name === "research");
-		expect(research).toBeDefined();
-		expect(research?.source).toBe("user");
-		const tools = research?.tools ?? [];
+	it("keeps solver restricted to web tools — no repo, file, or command access", async () => {
+		const solver = (await discoverAgents(cwd, home, roots([PLUGIN_ROOT]))).agents.find(a => a.name === "solver");
+		expect(solver).toBeDefined();
+		expect(solver?.source).toBe("user");
+		const tools = solver?.tools ?? [];
 
-		// The defining guarantee: research reasons from the web only.
+		// The defining guarantee: solver reasons from the web only.
 		expect(tools).toContain("web_search");
 		expect(tools).toContain("browser");
 		for (const forbidden of ["read", "write", "edit", "bash", "search", "find", "lsp", "ast_grep", "ast_edit"]) {
@@ -71,12 +71,18 @@ describe("omp-agents plugin", () => {
 		}
 	});
 
+	it("runs advanced on the slow role with prewalk disabled", async () => {
+		const advanced = (await discoverAgents(cwd, home, roots([PLUGIN_ROOT]))).agents.find(a => a.name === "advanced");
+		expect(advanced?.model).toEqual(["@slow"]);
+		expect(advanced?.prewalk).toBe(false);
+	});
+
 	it("keeps the fork's model roles and thinking level in the shipped frontmatter", async () => {
 		const agents = (await discoverAgents(cwd, home, roots([PLUGIN_ROOT]))).agents;
 		const modelOf = (name: string): string[] | undefined => agents.find(agent => agent.name === name)?.model;
 
 		expect(modelOf("solver")).toEqual(["pi/solver"]);
-		expect(modelOf("research")).toEqual(["pi/research"]);
+		expect(modelOf("advanced")).toEqual(["@slow"]);
 		expect(modelOf("tester")).toEqual(["pi/task"]);
 		expect(modelOf("designer")).toEqual(["pi/designer"]);
 
