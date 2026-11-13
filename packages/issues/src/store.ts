@@ -921,8 +921,9 @@ export interface ArchiveResult {
 }
 
 /**
- * Move an active issue to the archive (no-op if already archived). Closing an
- * active issue needs closing remarks in `reason`, stored trimmed as `archive_reason`.
+ * Move an active issue to the archive. Closing an active issue needs closing
+ * remarks in `reason`, stored trimmed as `archive_reason`. Re-archiving an
+ * archived issue updates its `status` and/or `archive_reason` when given.
  */
 export async function archiveIssue(
 	cwd: string,
@@ -932,7 +933,23 @@ export async function archiveIssue(
 	const current = await findIssueById(cwd, id);
 	if (!current) throw new Error(`Issue #${id} not found.`);
 	if (current.archived) {
-		return { record: current, wasArchived: true };
+		const reason = options.reason?.trim();
+		const statusChanged = options.status !== undefined && options.status !== current.frontmatter.status;
+		const reasonChanged = !!reason && reason !== current.frontmatter.archive_reason;
+		if (!statusChanged && !reasonChanged) return { record: current, wasArchived: true };
+		const record = await writeIssueRecord(
+			cwd,
+			current,
+			{ category: current.category, filename: current.filename, archived: true },
+			{
+				...current.frontmatter,
+				...(statusChanged ? { status: options.status } : {}),
+				...(reasonChanged ? { archive_reason: reason } : {}),
+				updated: nowIso(),
+			},
+			current.body,
+		);
+		return { record, wasArchived: true };
 	}
 	const reason = closingRemarksOrThrow(options.reason, "Archive rejected: ");
 
