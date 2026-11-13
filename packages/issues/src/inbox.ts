@@ -429,3 +429,21 @@ export async function loadSeen(root: string): Promise<SeenState> {
 	}
 	return { watermark: watermark ?? new Date(0).toISOString(), seen };
 }
+
+/**
+ * Board replies stay in the machine-local inbox until a claim takes them, so the
+ * issue file hides them from anyone who reads it before claiming. Listings are
+ * where a session picks queued work, so they show them verbatim (without taking).
+ */
+export async function pendingRepliesSection(root: string, ids: ReadonlySet<number>): Promise<string> {
+	let pending: PendingReply[];
+	try {
+		pending = (await listReplies(root)).filter(reply => ids.has(reply.id));
+	} catch {
+		return "";
+	}
+	if (pending.length === 0) return "";
+	const lines = pending.map(reply => `- #${reply.id} [${reply.at}] ${reply.text.replace(/\s*\n\s*/g, " ")}`);
+	return `\n\n## Pending user replies (not yet in the issue files)\nThese are the user's instructions for those issues and override the issue body and any brief. Claiming an issue (\`stage: running\`) delivers its replies into the file.\n${lines.join("\n")}`;
+}
+

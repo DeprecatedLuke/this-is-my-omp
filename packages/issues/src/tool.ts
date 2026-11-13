@@ -15,7 +15,15 @@ import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { ExtensionContext, ToolDefinition } from "@oh-my-pi/pi-coding-agent";
 import { prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import { takeReplies } from "./delivery";
-import { claim, claimIsStale, claimOwner, listReplies, type PendingReply, releaseClaim } from "./inbox";
+import {
+	claim,
+	claimIsStale,
+	claimOwner,
+	listReplies,
+	type PendingReply,
+	pendingRepliesSection,
+	releaseClaim,
+} from "./inbox";
 import issuesDescription from "./prompts/tool.md" with { type: "text" };
 import { renderIssuesCall, renderIssuesResult } from "./render";
 import { renderClaimReplies } from "./replies";
@@ -434,12 +442,13 @@ async function executeList(
 	if (params.stage) scopeBits.push(`stage=${params.stage}`);
 	if (params.query) scopeBits.push(`q=${JSON.stringify(params.query)}`);
 	const title = `# Issues (${summaries.length}, ${scopeBits.join(", ")})`;
-	const text = renderIssueListing(summaries, {
+	const listing = renderIssueListing(summaries, {
 		title,
 		emptyText: "_No matching issues._",
 		group: true,
 		showArchived: params.archived === undefined,
 	});
+	const text = listing + (await pendingRepliesSection(cwd, new Set(summaries.map(summary => summary.id))));
 	const filters: IssueFilters = {
 		category: params.category,
 		archived: params.archived,

@@ -172,6 +172,18 @@ describe("issues tool", () => {
 		});
 	});
 
+	it("list shows pending board replies of listed issues, without taking them", async () => {
+		const created = await runIssuesOp(tempDir, { op: "add", category: "infra", title: "Offline move", body: "B." });
+		const id = (created.details as IssuesToolDetails).id!;
+		await replyToIssue(tempDir, id, "allow moving from latest snapshot");
+
+		const first = textOf(await runIssuesOp(tempDir, { op: "list" }));
+		expect(first).toContain(`#${id} [`);
+		expect(first).toContain("allow moving from latest snapshot");
+		// Listing is not delivery: a second listing still shows it.
+		expect(textOf(await runIssuesOp(tempDir, { op: "list" }))).toContain("allow moving from latest snapshot");
+	});
+
 	it("list with a stage returns only issues on that stage; `none` matches issues with no stage", async () => {
 		const rows: Array<{ title: string; stage?: "running" | "up-next" | "needs-you"; needs?: string }> = [
 			{ title: "Running work", stage: "running" },
