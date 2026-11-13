@@ -33,6 +33,7 @@ import type {
 } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import issuesDoc from "./prompts/url.md" with { type: "text" };
+import { listReplies, type PendingReply } from "./inbox";
 import { findIssueByFilename, listIssues, renderIssueListing, saveIssueContent } from "./store";
 
 function cwdFromRegistry(): string | undefined {
@@ -100,10 +101,11 @@ async function buildListing(url: InternalUrl, cwd: string, archived: boolean): P
 			: "_No issues. Use the `issues` tool with `op: add` to create one._";
 
 	const body = renderIssueListing(summaries, { title, emptyText, group: true });
+	const pending = await pendingRepliesSection(cwd, new Set(summaries.map(summary => summary.id)));
 	const footer = archived
 		? "\n\nUse `issues://` for active issues. Edit an issue (body or metadata) by rewriting `issues://<id>.md` with the `write` tool — frontmatter changes drive status/category/slug lifecycle."
 		: "\n\nUse `issues://archive` for archived issues. Edit an issue (body or metadata) by rewriting `issues://<id>.md` with the `write` tool — frontmatter changes drive status/category/slug lifecycle.";
-	const content = `${body}${footer}`;
+	const content = `${body}${pending}${footer}`;
 
 	return {
 		url: url.href,
@@ -113,6 +115,23 @@ async function buildListing(url: InternalUrl, cwd: string, archived: boolean): P
 		immutable: true,
 		notes: ["Issues listing — read individual files via `issues://<filename>.md`."],
 	};
+}
+
+/**
+ * Board replies stay in the machine-local inbox until a claim takes them, so the
+ * issue file hides them from anyone who reads it before claiming. The listing is
+ * where a session picks queued work, so it shows them verbatim (without taking).
+ */
+async function pendingRepliesSection(cwd: string, ids: ReadonlySet<number>): Promise<string> {
+	let pending: PendingReply[];
+	try {
+		pending = (await listReplies(cwd)).filter(reply => ids.has(reply.id));
+	} catch {
+		return "";
+	}
+	if (pending.length === 0) return "";
+	const lines = pending.map(reply => `- #${reply.id} [${reply.at}] ${reply.text.replace(/\s*\n\s*/g, " ")}`);
+	return `\n\n## Pending user replies (not yet in the issue files)\nThese are the user's instructions for those issues and override the issue body and any brief. Claiming an issue (\`stage: running\`) delivers its replies into the file.\n${lines.join("\n")}`;
 }
 
 async function readIssueFile(url: InternalUrl, cwd: string, basename: string): Promise<InternalResource> {

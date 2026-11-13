@@ -111,6 +111,20 @@ describe("IssuesProtocolHandler", () => {
 		expect(byId.content).toBe(byName.content);
 	});
 
+	it("lists pending board replies of listed issues verbatim, without taking them", async () => {
+		const { record } = await addIssue(tempDir, { category: "lifecycle", title: "Offline move", body: "Fix: refuse." });
+		const other = await addIssue(tempDir, { category: "lifecycle", title: "Unrelated", body: "B." });
+		await replyToIssue(tempDir, record.id, "allow moving from latest snapshot");
+		await replyToIssue(tempDir, other.record.id, "reply on a filtered-out issue");
+
+		const listing = await InternalUrlRouter.instance().resolve("issues://?q=Offline", { cwd: tempDir });
+		expect(listing.content).toContain(`#${record.id} [`);
+		expect(listing.content).toContain("allow moving from latest snapshot");
+		expect(listing.content).not.toContain("reply on a filtered-out issue");
+		// Listing is not delivery: the reply stays queued for the claim.
+		expect((await listReplies(tempDir)).filter(r => r.id === record.id)).toHaveLength(1);
+	});
+
 	it("falls back to archive when reading an issue that was moved", async () => {
 		const { record } = await addIssue(tempDir, {
 			category: "security",
