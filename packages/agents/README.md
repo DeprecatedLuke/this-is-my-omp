@@ -31,9 +31,9 @@ only the host's embedded agents to disk, so these four are not part of it.
 
 ## Model roles
 
-The `model:` frontmatter uses the legacy `pi/<role>` selector spelling, which the
-host resolves through `modelRoles.<role>` (an unassigned role falls back through the
-host's role priority chain):
+The `model:` frontmatter uses role selectors — the legacy `pi/<role>` spelling or `@<role>`
+(`advanced`) — which the host resolves through `modelRoles.<role>` (an unassigned role
+falls back through the host's role priority chain):
 
 ```yaml
 modelRoles:

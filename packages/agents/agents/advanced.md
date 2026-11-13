@@ -3,6 +3,7 @@ name: advanced
 description: General-purpose subagent on the slow (strongest) model with no prewalk hand-off. Use for delegated multi-step work smaller models cannot do; otherwise prefer `task`.
 spawns: "*"
 model: "@slow"
+thinking-level: auto
 prewalk: false
 ---
 
