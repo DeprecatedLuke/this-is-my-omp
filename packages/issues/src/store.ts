@@ -918,6 +918,8 @@ export async function saveIssueContent(cwd: string, id: number, content: string)
 export interface ArchiveResult {
 	record: IssueRecord;
 	wasArchived: boolean;
+	/** True when the record was written (always for a fresh archive). */
+	changed: boolean;
 }
 
 /**
@@ -936,7 +938,7 @@ export async function archiveIssue(
 		const reason = options.reason?.trim();
 		const statusChanged = options.status !== undefined && options.status !== current.frontmatter.status;
 		const reasonChanged = !!reason && reason !== current.frontmatter.archive_reason;
-		if (!statusChanged && !reasonChanged) return { record: current, wasArchived: true };
+		if (!statusChanged && !reasonChanged) return { record: current, wasArchived: true, changed: false };
 		const record = await writeIssueRecord(
 			cwd,
 			current,
@@ -949,7 +951,7 @@ export async function archiveIssue(
 			},
 			current.body,
 		);
-		return { record, wasArchived: true };
+		return { record, wasArchived: true, changed: true };
 	}
 	const reason = closingRemarksOrThrow(options.reason, "Archive rejected: ");
 
@@ -967,7 +969,7 @@ export async function archiveIssue(
 		frontmatter,
 		current.body,
 	);
-	return { record, wasArchived: false };
+	return { record, wasArchived: false, changed: true };
 }
 
 export interface UnarchiveResult {

@@ -263,7 +263,7 @@ async function executeArchive(
 	const before = await findIssueById(cwd, params.id);
 	// The store enforces the closing remarks, so an unknown id still errors first
 	// and a blank `reason` comes back as the store's own rejection.
-	const { record, wasArchived } = await archiveIssue(cwd, params.id, {
+	const { record, wasArchived, changed } = await archiveIssue(cwd, params.id, {
 		reason: params.reason,
 		status: params.status,
 	});
@@ -277,11 +277,12 @@ async function executeArchive(
 	}
 	const details: IssuesToolDetails = {
 		...detailsFromRecord("archive", record),
-		unchanged: wasArchived,
+		unchanged: !changed,
 		previousStatus: before?.frontmatter.status,
 		previousArchived: before?.archived,
 	};
-	return textResult(summarizeRecord(wasArchived ? "Already archived" : "Archived", record), details);
+	const verb = !wasArchived ? "Archived" : changed ? "Updated archived issue" : "Already archived";
+	return textResult(summarizeRecord(verb, record), details);
 }
 
 async function executeUnarchive(

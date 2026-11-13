@@ -202,7 +202,15 @@ describe("issues store: lifecycle", () => {
 		await archiveIssue(tempDir, record.id, { reason: "Fixed." });
 		const second = await archiveIssue(tempDir, record.id);
 		expect(second.wasArchived).toBe(true);
+		expect(second.changed).toBe(false);
 		expect(second.record.archived).toBe(true);
+
+		const relabeled = await archiveIssue(tempDir, record.id, { status: "wontfix", reason: "Not a bug." });
+		expect(relabeled.changed).toBe(true);
+		const onDisk = await findIssueById(tempDir, record.id);
+		expect(onDisk?.archived).toBe(true);
+		expect(onDisk?.frontmatter.status).toBe("wontfix");
+		expect(onDisk?.frontmatter.archive_reason).toBe("Not a bug.");
 	});
 
 	it("editing status to a terminal value auto-archives, and reopening restores + drops archive_reason", async () => {
