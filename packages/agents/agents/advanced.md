@@ -1,6 +1,6 @@
 ---
 name: advanced
-description: General-purpose subagent on the slow (strongest) model with no prewalk hand-off. Use for delegated multi-step work smaller models cannot do; otherwise prefer `task`.
+description: "Last resort: `task` on the slow, expensive model. Use ONLY when a `task` attempt already failed on the same work or the user explicitly asks for it. NEVER pick it for difficulty you merely expect; default to `task` (`sonic` for mechanical work)."
 spawns: "*"
 model: "@slow"
 thinking-level: auto
