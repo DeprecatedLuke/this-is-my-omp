@@ -8,7 +8,7 @@ OMP extension package root.
 | Agent      | Purpose                                                                 | Tools                | Model        |
 | ---------- | ----------------------------------------------------------------------- | -------------------- | ------------ |
 | `solver`   | Open-ended problem solving from the web plus reasoning; no repo access.  | `web_search`, `browser` | `pi/solver`  |
-| `advanced` | Last-resort `task` worker on the `@slow` role with prewalk off: only after a `task` attempt failed or on explicit request. | all (host default) | `@slow` |
+| `advanced` | `task` worker that stays on the `@slow` role through its edits (prewalk off), for work where the writing itself needs reasoning; plan-then-specified edits stay on `task`. | all (host default) | `@slow` |
 | `tester`   | Authoritative test writer: defends real contracts, refuses plumbing tests. | read/grep/glob/bash/edit/write/lsp/ast_grep/ast_edit | `pi/task` |
 | `designer` | UI/visual design: layout, hierarchy, theming, polish; screenshots and iterates. | all (host default) | `pi/designer` |
 

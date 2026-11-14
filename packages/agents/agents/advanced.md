@@ -1,6 +1,6 @@
 ---
 name: advanced
-description: "Last resort: `task` on the slow, expensive model. Use ONLY when a `task` attempt already failed on the same work or the user explicitly asks for it. NEVER pick it for difficulty you merely expect; default to `task` (`sonic` for mechanical work)."
+description: "`task` without the prewalk switch: stays on the slow, strongest model through every edit instead of handing writes to a cheaper model. Pick it when the writing itself needs reasoning (logic worked out while editing: subtle invariants, concurrency, algorithms, debug-fix loops, cross-file changes that must stay consistent). Hard exploration followed by edits a plan fully specifies stays on `task`; mechanical work goes to `sonic`."
 spawns: "*"
 model: "@slow"
 thinking-level: auto
