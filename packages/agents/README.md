@@ -8,14 +8,15 @@ OMP extension package root.
 | Agent      | Purpose                                                                 | Tools                | Model        |
 | ---------- | ----------------------------------------------------------------------- | -------------------- | ------------ |
 | `solver`   | Open-ended problem solving from the web plus reasoning; no repo access.  | `web_search`, `browser` | `pi/solver`  |
-| `advanced` | `task` worker that stays on the `@slow` role through its edits (prewalk off), for work where the writing itself needs reasoning; plan-then-specified edits stay on `task`. | all (host default) | `@slow` |
+| `advanced` | `task` worker on the spawning session's model that prewalks to `@default` (not smol) at its first edit, for work where the writing itself needs reasoning; plan-then-specified edits stay on `task`. | all (host default) | inherited |
+| `hyper`    | Last-resort `task` worker on the `@solver` role, prewalk off; used only after `advanced` fails or on explicit request. | all (host default) | `@solver` |
 | `tester`   | Authoritative test writer: defends real contracts, refuses plumbing tests. | read/grep/glob/bash/edit/write/lsp/ast_grep/ast_edit | `pi/task` |
 | `designer` | UI/visual design: layout, hierarchy, theming, polish; screenshots and iterates. | all (host default) | `pi/designer` |
 
 `solver` and `tester` run with `thinking-level: high`. `solver` is web-only by
 design: it never receives `read`, `write`, `edit`, `bash`, `grep`, `find`, or `lsp`,
 so a delegated question reasoning about the caller's repository is out of contract.
-`advanced` sets `prewalk: false`: it stays on its model for the whole run (a per-agent `/agents` override can still re-arm it).
+`advanced` sets `model: "@task"` (like the bundled `task`, it inherits the spawning session's model) and `prewalk: "@default"`: at its first edit/write it hands off to the default role rather than the generic prewalk target (a per-agent `/agents` override can still change it).
 
 ## Install
 
@@ -59,5 +60,5 @@ bun test packages/agents
 ```
 
 The suite drives the host's real `discoverAgents()` with this package directory as an
-explicit extension root and asserts the four agents are published from
-`agents/`, keep their model/thinking frontmatter, keep `solver` web-only, and keep `advanced` on `@slow` without prewalk.
+explicit extension root and asserts the five agents are published from
+`agents/`, keep their model/thinking frontmatter, keep `solver` web-only, keep `advanced` on the inherited model prewalking to `@default`, and keep `hyper` on `@solver` without prewalk.

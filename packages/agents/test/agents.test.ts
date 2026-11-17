@@ -11,7 +11,7 @@ import type { EffectiveExtensionRoots } from "@oh-my-pi/pi-coding-agent/capabili
 import { discoverAgents } from "@oh-my-pi/pi-coding-agent/task/discovery";
 
 const PLUGIN_ROOT = path.resolve(import.meta.dir, "..");
-const SHIPPED = ["advanced", "solver", "tester", "designer"] as const;
+const SHIPPED = ["advanced", "hyper", "solver", "tester", "designer"] as const;
 
 let cwd: string;
 let home: string;
@@ -36,7 +36,7 @@ async function names(extensionRoots: EffectiveExtensionRoots): Promise<string[]>
 }
 
 describe("omp-agents plugin", () => {
-	it("publishes advanced, solver, tester, and designer to discovery", async () => {
+	it("publishes advanced, hyper, solver, tester, and designer to discovery", async () => {
 		const found = await names(roots([PLUGIN_ROOT]));
 		for (const name of SHIPPED) expect(found).toContain(name);
 	});
@@ -71,10 +71,16 @@ describe("omp-agents plugin", () => {
 		}
 	});
 
-	it("runs advanced on the slow role with prewalk disabled", async () => {
+	it("runs advanced on the inherited model, prewalking to the default role", async () => {
 		const advanced = (await discoverAgents(cwd, home, roots([PLUGIN_ROOT]))).agents.find(a => a.name === "advanced");
-		expect(advanced?.model).toEqual(["@slow"]);
-		expect(advanced?.prewalk).toBe(false);
+		expect(advanced?.model).toEqual(["@task"]);
+		expect(advanced?.prewalk).toBe("@default");
+	});
+
+	it("runs hyper on the solver role with prewalk disabled", async () => {
+		const hyper = (await discoverAgents(cwd, home, roots([PLUGIN_ROOT]))).agents.find(a => a.name === "hyper");
+		expect(hyper?.model).toEqual(["@solver"]);
+		expect(hyper?.prewalk).toBe(false);
 	});
 
 	it("keeps the fork's model roles and thinking level in the shipped frontmatter", async () => {
@@ -82,7 +88,6 @@ describe("omp-agents plugin", () => {
 		const modelOf = (name: string): string[] | undefined => agents.find(agent => agent.name === name)?.model;
 
 		expect(modelOf("solver")).toEqual(["pi/solver"]);
-		expect(modelOf("advanced")).toEqual(["@slow"]);
 		expect(modelOf("tester")).toEqual(["pi/task"]);
 		expect(modelOf("designer")).toEqual(["pi/designer"]);
 

@@ -1,10 +1,10 @@
 ---
 name: advanced
-description: "`task` without the prewalk switch: stays on the slow, strongest model through every edit instead of handing writes to a cheaper model. Pick it when the writing itself needs reasoning (logic worked out while editing: subtle invariants, concurrency, algorithms, debug-fix loops, cross-file changes that must stay consistent). Hard exploration followed by edits a plan fully specifies stays on `task`; mechanical work goes to `sonic`."
+description: "`task` that prewalks to the default model instead of a cheap one: it starts on the spawning session's model, then hands edits to the default model rather than smol. Pick it when the writing itself needs reasoning (logic worked out while editing: subtle invariants, concurrency, algorithms, debug-fix loops, cross-file changes that must stay consistent). Hard exploration followed by edits a plan fully specifies stays on `task`; mechanical work goes to `sonic`."
 spawns: "*"
-model: "@slow"
+model: "@task"
 thinking-level: auto
-prewalk: false
+prewalk: "@default"
 ---
 
 Worker agent: delegated tasks too hard for smaller models.
